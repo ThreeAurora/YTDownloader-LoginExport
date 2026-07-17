@@ -1,0 +1,130 @@
+{
+	"dependencies": {
+		"electron-updater": "^6.8.9",
+		"systeminformation": "^5.31.7",
+		"yt-dlp-wrap-plus": "^2.4.3"
+	},
+	"name": "ytdownloader",
+	"version": "3.22.0",
+	"main": "main.js",
+	"scripts": {
+		"start": "electron .",
+		"dist": "electron-builder",
+		"debug": "electron --inspect=5858 .",
+		"windows": "electron-builder -w",
+		"linux": "electron-builder -l",
+		"mac": "electron-builder -m",
+		"gh-windows": "electron-builder -w --publish=always",
+		"gh-linux": "electron-builder -l --publish=always",
+		"gh-mac": "electron-builder -m --publish=always"
+	},
+	"author": {
+		"name": "Andrew",
+		"email": "aandrew.me@pm.me"
+	},
+	"publish": {
+		"provider": "github",
+		"owner": "aandrew-me",
+		"repo": "ytDownloader",
+		"private": false
+	},
+	"license": "GPL-3.0",
+	"description": "Download videos and audios from YouTube and many other sites",
+	"devDependencies": {
+		"electron": "^30.5.1",
+		"electron-builder": "^26.15.3",
+		"typescript": "^5.3.3"
+	},
+	"build": {
+		"productName": "YTDownloader",
+		"appId": "io.github.aandrew_me.ytdn",
+		"artifactName": "${productName}.${ext}",
+		"files": [
+			"./resources/**/*",
+			"main.js",
+			"./html/**/*",
+			"./resources/**/*",
+			"./public/**/*",
+			"package.json",
+			"./assets/**/*",
+			"./src/*.js",
+			"./ffmpeg/**/*",
+			"!ffmpeg.patch",
+			"translations",
+			"node*"
+		],
+		"electronLanguages": [
+			"en-US"
+		],
+		"mac": {
+			"category": "Utility",
+			"target": [
+				"zip",
+				"dmg"
+			],
+			"artifactName": "${productName}_Mac_${arch}.${ext}"
+		},
+		"dmg": {
+			"contents": [
+				{
+					"x": 130,
+					"y": 220
+				},
+				{
+					"x": 410,
+					"y": 220,
+					"type": "link",
+					"path": "/Applications"
+				}
+			],
+			"sign": false
+		},
+		"asar": false,
+		"directories": {
+			"buildResources": "resources",
+			"output": "release"
+		},
+		"linux": {
+			"target": [
+				"Appimage",
+				"snap",
+				"rpm",
+				"zip",
+				"deb"
+			],
+			"category": "Utility",
+			"artifactName": "${productName}_Linux.${ext}"
+		},
+		"snap": {
+			"grade": "stable",
+			"base": "core22"
+		},
+		"win": {
+			"target": [
+				"nsis",
+				"msi",
+				"zip"
+			],
+			"artifactName": "${productName}_Win.${ext}"
+		},
+		"nsis": {
+			"allowToChangeInstallationDirectory": true,
+			"oneClick": false,
+			"deleteAppDataOnUninstall": true,
+			"license": "./LICENSE"
+		},
+		"msi": {
+			"oneClick": true,
+			"createDesktopShortcut": true,
+			"createStartMenuShortcut": true,
+			"shortcutName": "YTDownloader"
+		},
+		"appx": {
+			"publisher": "CN=E2D3E7B6-04EB-4CC9-857E-F24A66539745",
+			"publisherDisplayName": "aandrew-me",
+			"identityName": "aandrew-me.YTDownloaderPlus",
+			"applicationId": "YTDownloaderPlus",
+			"displayName": "YTDownloader Plus"
+		}
+	}
+}
