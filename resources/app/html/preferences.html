@@ -227,7 +227,7 @@
             <section class="settings-section">
                 <p id="flatpakTxt" data-translate="flatsealPermissionWarning"></p>
 
-                <div class="prefBox">
+                <div class="prefBox" style="display:none;">
                     <div>
                         <span id="browserTxt" data-translate="selectBrowserForCookies">Select browser to use cookies
                             from</span>
@@ -243,6 +243,13 @@
                         <option value="safari">Safari</option>
                         <option value="vivaldi">Vivaldi</option>
                     </select>
+                </div>
+                <div class="prefBox">
+                    <div>
+                        <span>登录 YouTube 自动导入 Cookies（若过期请重新登录）</span>
+                    </div>
+                    <button class="btn greenBtn" id="loginYoutubeBtn">登录</button>
+                    <span id="loginYoutubeStatus"></span>
                 </div>
             </section>
 

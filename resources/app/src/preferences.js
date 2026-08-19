@@ -452,3 +452,30 @@ function showPopup(text, isError = false) {
 		}, 400);
 	}, 2200);
 }
+
+// YouTube 登录并导出 cookies
+const loginYoutubeBtn = getId("loginYoutubeBtn");
+const loginYoutubeStatus = getId("loginYoutubeStatus");
+
+if (loginYoutubeBtn) {
+	loginYoutubeBtn.addEventListener("click", async () => {
+		loginYoutubeBtn.disabled = true;
+		loginYoutubeStatus.textContent = "正在打开登录窗口…";
+		try {
+			const result = await ipcRenderer.invoke("open-youtube-login");
+			if (result && result.success) {
+				loginYoutubeStatus.textContent = "已自动导入 Cookies";
+				showPopup("已自动导入 Cookies");
+			} else {
+				const msg = result?.error || "未知错误";
+				loginYoutubeStatus.textContent = msg;
+				showPopup(msg, true);
+			}
+		} catch (error) {
+			loginYoutubeStatus.textContent = "操作失败：" + error.message;
+			showPopup("操作失败：" + error.message, true);
+		} finally {
+			loginYoutubeBtn.disabled = false;
+		}
+	});
+}
