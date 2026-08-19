@@ -70,6 +70,7 @@ const CONSTANTS = {
 		MENU: "menu",
 		PREFERENCE_WIN: "preferenceWin",
 		ABOUT_WIN: "aboutWin",
+		MOD_NOTES_WIN: "modNotesWin",
 		PLAYLIST_WIN: "playlistWin",
 		HISTORY_WIN: "historyWin",
 		COMPRESSOR_WIN: "compressorWin",
@@ -887,6 +888,7 @@ class YtDownloaderApp {
 		const menuMapping = {
 			[CONSTANTS.DOM_IDS.PREFERENCE_WIN]: "/preferences.html",
 			[CONSTANTS.DOM_IDS.ABOUT_WIN]: "/about.html",
+			[CONSTANTS.DOM_IDS.MOD_NOTES_WIN]: "/mod_notes.html",
 			[CONSTANTS.DOM_IDS.HISTORY_WIN]: "/history.html",
 		};
 		const windowMapping = {

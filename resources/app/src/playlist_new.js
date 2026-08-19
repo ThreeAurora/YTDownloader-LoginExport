@@ -181,6 +181,11 @@ getId("aboutWin").addEventListener("click", () => {
 	ipcRenderer.send("load-page", __dirname + "/about.html");
 });
 
+getId("modNotesWin").addEventListener("click", () => {
+	closeMenu();
+	ipcRenderer.send("load-page", __dirname + "/mod_notes.html");
+});
+
 getId("historyWin").addEventListener("click", () => {
 	closeMenu();
 	ipcRenderer.send("load-page", __dirname + "/history.html");

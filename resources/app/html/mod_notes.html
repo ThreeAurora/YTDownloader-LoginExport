@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>魔改说明</title>
+    <link rel="stylesheet" href="../assets/css/extra.css">
+    <script src="../translations/i18n-init.js" defer></script>
+</head>
+
+<body>
+    <div id="top">
+        <a id="back" class="btn blueBtn">返回</a>
+    </div>
+    <h1>YTDownloader 魔改版</h1>
+    <p><strong>by 简单</strong></p>
+    <hr>
+    <h2>本次魔改内容</h2>
+    <ul>
+        <li>新增“登录 YouTube 自动导入 Cookies”：在设置页点击“登录”，内置窗口登录后自动导出 cookies.txt，解决 Edge/Chrome 新版加密导致 yt-dlp 无法直接读取 cookies（DPAPI/App-Bound）的问题。</li>
+        <li>音频下载自动优先选择 OPUS，其次 M4A，再其他；同优先级自动选体积最大的音频。</li>
+        <li>关闭自动更新。</li>
+        <li>窗口标题改为“YTDownloader魔改by简单”。</li>
+    </ul>
+    <p>Cookies 有时效，过期后请在设置页重新登录导入。</p>
+    <script>
+        const { ipcRenderer } = require("electron");
+
+        document.addEventListener("translations-loaded", () => {
+            const storageTheme = localStorage.getItem("theme");
+            document.documentElement.setAttribute("theme", storageTheme || "frappe");
+
+            document.getElementById("back").addEventListener("click", () => {
+                ipcRenderer.send("close-secondary");
+            });
+        });
+    </script>
+</body>
+
+</html>

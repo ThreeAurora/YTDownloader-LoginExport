@@ -84,6 +84,7 @@ const playlistDownloader = {
 		menu: document.getElementById("menu"),
 		preferenceWinBtn: document.getElementById("preferenceWin"),
 		aboutWinBtn: document.getElementById("aboutWin"),
+		modNotesWinBtn: document.getElementById("modNotesWin"),
 		historyWinBtn: document.getElementById("historyWin"),
 		homeWinBtn: document.getElementById("homeWin"),
 		compressorWinBtn: document.getElementById("compressorWin"),
@@ -204,6 +205,9 @@ const playlistDownloader = {
 		);
 		this.ui.aboutWinBtn.addEventListener("click", () =>
 			this.navigate("page", "/about.html"),
+		);
+		this.ui.modNotesWinBtn.addEventListener("click", () =>
+			this.navigate("page", "/mod_notes.html"),
 		);
 		this.ui.historyWinBtn.addEventListener("click", () =>
 			this.navigate("page", "/history.html"),

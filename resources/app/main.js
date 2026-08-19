@@ -91,7 +91,8 @@ async function initialize() {
 	await loadTranslations();
 
 	registerIpcHandlers();
-	registerAutoUpdaterEvents();
+	// 自动更新已在本魔改版中关闭
+	// registerAutoUpdaterEvents();
 
 	createWindow();
 
@@ -115,6 +116,12 @@ function createWindow() {
 			contextIsolation: false,
 			spellcheck: false,
 		},
+	});
+
+	appState.mainWindow.setTitle("YTDownloader魔改by简单");
+	appState.mainWindow.on("page-title-updated", (event) => {
+		event.preventDefault();
+		appState.mainWindow.setTitle("YTDownloader魔改by简单");
 	});
 
 	appState.mainWindow.loadFile("html/index.html");
@@ -174,6 +181,11 @@ function createSecondaryWindow(file) {
 	});
 
 	// appState.secondaryWindow.webContents.openDevTools();
+	appState.secondaryWindow.setTitle("YTDownloader魔改by简单");
+	appState.secondaryWindow.on("page-title-updated", (event) => {
+		event.preventDefault();
+		appState.secondaryWindow.setTitle("YTDownloader魔改by简单");
+	});
 	appState.secondaryWindow.loadFile(file);
 	appState.secondaryWindow.setMenu(null);
 	appState.secondaryWindow.once("ready-to-show", () => {
@@ -261,10 +273,10 @@ function createTray() {
 function registerIpcHandlers() {
 	ipcMain.on("autoUpdate", (_event, status) => {
 		appState.autoUpdateEnabled = status;
-
-		if (status) {
-			autoUpdater.checkForUpdates();
-		}
+		// 自动更新已在本魔改版中关闭
+		// if (status) {
+		// 	autoUpdater.checkForUpdates();
+		// }
 	});
 
 	ipcMain.on("reload", () => {

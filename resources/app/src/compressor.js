@@ -997,6 +997,7 @@ const menuRoutes = {
 	preferenceWin: {page: "/preferences.html", channel: "load-page"},
 	playlistWin: {page: "/playlist.html", channel: "load-win"},
 	aboutWin: {page: "/about.html", channel: "load-page"},
+	modNotesWin: {page: "/mod_notes.html", channel: "load-page"},
 	historyWin: {page: "/history.html", channel: "load-page"},
 	homeWin: {page: "/index.html", channel: "load-win"},
 	searchWin: {page: "/search.html", channel: "load-win"},
