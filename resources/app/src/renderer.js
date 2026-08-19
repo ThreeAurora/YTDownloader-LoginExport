@@ -1840,8 +1840,6 @@ class YtDownloaderApp {
 				format.acodec !== "none" &&
 				format.video_ext === "none"
 			) {
-				if (!showMoreFormats && format.ext === "webm") return;
-
 				const audioExt = format.ext === "webm" ? "opus" : format.ext;
 
 				const formatNote = i18n.__(
@@ -1861,6 +1859,8 @@ class YtDownloaderApp {
 					text: `${formatNote} ${audioExt} ${displaySize}`,
 					value: `${format.format_id}|${audioExt}`,
 					html: htmlContent,
+					_ext: audioExt,
+					_size: sizeInMB,
 				});
 			}
 		});
@@ -1882,6 +1882,24 @@ class YtDownloaderApp {
 		const audioForVideoSelectEl = $(
 			CONSTANTS.DOM_IDS.AUDIO_FOR_VIDEO_FORMAT_SELECT,
 		);
+
+		// Auto-select best audio: prefer opus > m4a > others, then largest size
+		if (audioOptions.length > 0) {
+			const audioPriority = {opus: 0, m4a: 1};
+			const ranked = audioOptions
+				.map((opt) => ({
+					opt,
+					priority:
+						audioPriority[opt._ext] !== undefined
+							? audioPriority[opt._ext]
+							: 2,
+					size: typeof opt._size === "number" ? opt._size : -1,
+				}))
+				.sort((a, b) => a.priority - b.priority || b.size - a.size);
+
+			audioOptions.forEach((opt) => delete opt.selected);
+			ranked[0].opt.selected = true;
+		}
 
 		const mountSlimSelect = (domElement, optionsData) => {
 			if (!domElement) return;
