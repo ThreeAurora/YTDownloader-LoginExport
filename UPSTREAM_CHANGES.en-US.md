@@ -2,46 +2,45 @@
 
 [中文](./UPSTREAM_CHANGES.md) | English
 
-- **Baseline**: [aandrew-me/ytDownloader](https://github.com/aandrew-me/ytDownloader) **v3.22.0** (tag determination: local `package.json` has version=3.22.0; and all session edits replay cleanly, in original order, onto the upstream source — the replay result matches the disk byte for byte).
-- **Time of changes**: 2026-08-19 (per the DSH session log; the Claude session 3a604718 only performed directory reconnaissance, with no edit events).
-- **Scope of changes**: source under `resources/app/` only; the Electron runtime and `node_modules/` are untouched.
+- **Baseline**: [aandrew-me/ytDownloader](https://github.com/aandrew-me/ytDownloader) upstream main **872210d** (synced 2026-09-02; package.json version=4.0.2, i.e. the v4.0.1 tag plus 11 further fixes/features including the concurrent-fragments download option). All 109 upstream commits since v3.22.0 have been followed.
+- **Upstream shape**: since v4 this is a single-page app (seven pages merged into `html/index.html`, plus a new `preload.js` contextIsolation bridge and playwright tests). What this repository tracks — `resources/app/` — is the installed-app layout (the Electron runtime sits at the repository root, untracked).
+- **Time of changes**: v3.22.0 modifications = 2026-08-19 (DSH session); v4 upgrade & modification re-port = 2026-09-02.
 
 ## 1. In-app YouTube login with cookies export (core modification)
 
 | File | Change | Purpose |
 | --- | --- | --- |
-| `main.js` | Added the `open-youtube-login` IPC handler, `openLoginWindowAndWait()`, and `exportLoginCookies()`; `appState` gains `loginWindow`/`loginWaiters` | The settings page "Log in" button opens a built-in login window (`persist:ytdlp-login` dedicated partition, Google account login → YouTube); once navigation to the YouTube domain detects login-state cookies such as `SID/__Secure-3PSID/__Secure-3PAPISID/SAPISID/LOGIN_INFO`, the window auto-closes after a 1.5 s delay; on close, YouTube-related cookies from the session are exported as a Netscape-format `cookies.txt` written to `%USERPROFILE%\.ytDownloader\cookies.txt` |
-| `html/preferences.html` | ① The upstream "Select browser to use cookies from" selector is hidden wholesale with `display:none`; ② a new prefBox is added: "Log in to YouTube & auto-import Cookies (log in again if expired)" + the `#loginYoutubeBtn` login button + a status line | Sidesteps the `Failed to decrypt with DPAPI` error of `--cookies-from-browser` on newer Edge/Chrome (DPAPI/App-Bound encryption; yt-dlp issue #10927) by doing a one-time in-app login export instead |
-| `src/preferences.js` | Added the login button event: `ipcRenderer.invoke("open-youtube-login")`, with success/failure status and a popup notice | Wires up the login entry point |
+| `main.js` | Added the `open-youtube-login` IPC handler, `openLoginWindowAndWait()`, and `exportLoginCookies()`; `appState` gains `loginWindow`/`loginWaiters` | The settings page "Log in" button opens a built-in login window (`persist:ytdlp-login` dedicated partition, Google sign-in → YouTube); once navigation to the YouTube domain detects login-state cookies such as `SID/__Secure-3PSID/__Secure-3PAPISID/SAPISID/LOGIN_INFO`, the window auto-closes after a 1.5 s delay |
+| `main.js` | The exported Netscape-format text is returned to the renderer with the invoke result; a copy is also written to `%USERPROFILE%\.ytDownloader\cookies.txt` (the path convention from the v3.22.0 mod) | Feeds the native cookies mechanism upstream v4 already has (see below) while keeping the out-of-app `yt-dlp.conf --cookies` usage working |
+| `html/index.html` | The cookies section gains a "Log in to YouTube & auto-import Cookies" button + status line; the **Browser source option is removed** | Upstream v4 ships a native "Netscape cookie blocks → userData/cookies.txt" sync mechanism, so the login export plugs straight into it; `--cookies-from-browser` fails with `Failed to decrypt with DPAPI` on newer Edge/Chrome (DPAPI/App-Bound encryption; yt-dlp issue #10927), so the whole path is removed |
+| `src/preferences.js` | Login button event: invoke the main-process login → replace the previous login-generated block by marker (manually pasted blocks untouched) → native persistence via `saveAndSyncCookieBlocks`; a legacy `cookieSource=browser` is force-migrated to `file` | The download-argument chains (`renderer.js _getCookieArgs` / `playlist.js`) read cookies.txt natively — no changes needed there |
+| Outside repo | `%USERPROFILE%\.ytDownloader\cookies.txt` + `yt-dlp.conf` (`--cookies`) | For calling yt-dlp directly (not committed) |
 
-> Companion setup (outside the repository, under `%USERPROFILE%\.ytDownloader\`, not committed): `cookies.txt` (the login export artifact) is loaded by yt-dlp's local config `yt-dlp.conf` (`--cookies "...cookies.txt"`); a `yt-dlp-ChromeCookieUnlock` plugin had previously been installed for DPAPI unlock experiments. The exported cookies.txt path is hard-coded to that convention.
+> Compared with the v3.22.0 mod: the old version could only deliver the export via an external yt-dlp.conf; after the v4 re-port the login result lives inside the app's native cookie-block system — visible and editable in settings, applied automatically to downloads.
 
 ## 2. Automatic audio format preference
 
 | File | Change | Purpose |
 | --- | --- | --- |
-| `src/renderer.js` | ① Removed the logic that hid `webm` (opus) audio entries outside "more formats" mode; ② audio options now carry `_ext`/`_size` metadata; ③ added automatic preference: `opus > m4a > others`, largest file wins within the same priority, automatically set as selected | Automatically picks the best audio format at download time (user requirement: audio quality first, zero fuss) |
-| `html/playlist.html` | Added `selected` to `Opus` in the audio format dropdown | Opus selected by default |
+| `src/renderer.js` | ① webm (opus) audio entries are no longer hidden in compact mode; ② with no explicit audio preference, `standaloneAudioPref` defaults to `"opus"` (an explicit choice still wins) | Upstream v4 already scores audio formats (bitrate weight ≈ size priority, language priority kept); the mod only adds "default to opus + never hide opus entries", everything else follows the upstream engine |
 
 ## 3. Mod branding & maintenance policy
 
 | File | Change | Purpose |
 | --- | --- | --- |
-| `html/mod_notes.html` | **New**: in-app "Mod notes" page (this round's modifications plus the cookies expiry notice) | Makes the modifications visible inside the app |
-| `html/index.html` `search.html` `playlist.html` `playlist_new.html` `compressor.html` | Added a "Mod notes" menu item after About in the top-right menu (`id=modNotesWin`) | Entry point on every page |
-| `src/renderer.js` `src/playlist.js` `src/playlist_new.js` `src/compressor.js` | `MOD_NOTES_WIN` constants/mappings/click event wiring → opens `mod_notes.html` | Makes the menu item functional |
+| `html/mod_notes.html` | In-app "Mod notes" page; **v4 adaptation**: the inline script's `require("electron")` → `window.electronAPI` (no `require` under contextIsolation); its dependency `assets/css/extra.css` (deleted upstream in v4) is kept in the repository | Makes the modifications visible inside the app |
+| `html/index.html` + `src/common.js` | A "Mod notes" sidebar nav button (no `data-target`, so it stays out of view switching); clicking opens the standalone secondary window via `load-page` | Entry point |
 | `main.js` | Main/secondary window titles fixed to "YTDownloader魔改by简单", intercepting `page-title-updated` | Mod branding |
-| `main.js` | Commented out the `registerAutoUpdaterEvents()` call; the `autoUpdate` IPC handler no longer triggers `autoUpdater.checkForUpdates()` | Auto-update off, so upstream releases cannot overwrite the modifications |
+| `main.js` | `triggerUpdateCheck()` returns immediately (auto-update fully off, including the manual check entry) | Auto-update off, so upstream releases cannot overwrite the modifications |
 
-## 4. Non-functional differences (packaging artifacts, not modifications)
+## 4. Runtime add-ons (not modifications)
 
-| File | Difference | Notes |
-| --- | --- | --- |
-| `package.json` | Compared with upstream, the `scripts`/`devDependencies`/`build` sections are missing (the three dependencies are identical) | Routine trimming of the runtime directory's `resources/app/package.json` by electron-builder packaging; use the upstream full `package.json` when building from source |
+- `ffmpeg/`, `node.exe`, `node_modules/` (yt-dlp-wrap-plus 2.5.0 etc.) are the installed app's runtime, committed for loss-proofing.
+- Upstream's root-level `patch-snap.js` (a snap-build patch satisfying the package.json postinstall hook) is kept in the repository; it no-ops on Windows.
 
 ## 5. Session event archive notes
 
-- **DSH session** (`session-915627f2`, 2026-08-19 14:56–17:32): all 30 edit/write events hit `E:\YTDownloader\resources\app\` — exactly the changes above; the event stream is in the repository migration archive `events_dsh.jsonl`.
-  - Sole exception target: `E:\DSSpace\.ytdlp-temp\probe_edge_cookies.py` (1 write — a throwaway probe script using rookiepy to read Edge cookies, part of the cookies diagnostics, outside the project directory, not committed).
-- **Claude session** (`3a604718`): 4 Bash reconnaissance passes (ls/reads) over the `E:\YTDownloader` and `yt-dlp-wrap-plus` directories, **no Edit/Write events**, no commits produced.
-- The first half of the fix chain (installing the `yt-dlp-ChromeCookieUnlock` plugin, exporting/placing `cookies.txt`, writing `yt-dlp.conf`) were all configuration operations under `%USERPROFILE%\.ytDownloader\` (pwsh), touching no repository source.
+- **DSH session** (`session-915627f2`, 2026-08-19 14:56–17:32): all 30 edit/write events hit `E:\YTDownloader\resources\app\` — exactly the v3.22.0 modifications; the event stream is in the repository migration archive `events_dsh.jsonl`.
+  - Sole exception target: `E:\DSSpace\.ytdlp-temp\probe_edge_cookies.py` (1 write — a throwaway probe script using rookiepy to read Edge cookies, outside the project directory, not committed).
+- **Claude session** (`3a604718`): 4 Bash reconnaissance passes over `E:\YTDownloader` and `yt-dlp-wrap-plus`, **no Edit/Write events**, no commits produced.
+- **v4 upgrade & re-port** (2026-09-02): performed directly by AI against upstream main (overlay sync → modification re-port → dependency sync → launch smoke test); no session edit events correspond to it. The first half of the fix chain (the `yt-dlp-ChromeCookieUnlock` plugin trial, the `yt-dlp.conf` setup) were configuration operations under `%USERPROFILE%\.ytDownloader\`, touching no repository source.

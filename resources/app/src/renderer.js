@@ -3060,15 +3060,17 @@ class YtDownloaderApp {
 			return score;
 		};
 
-		const prefAudioQuality =
+		const prefAudioQualityRaw = (
 			localStorage.getItem("preferredAudioQuality") ||
 			localStorage.getItem("preferredAudioFormat") ||
-			"";
-		const standaloneAudioPref =
-			prefAudioQuality.toLowerCase().includes("opus") ||
-			prefAudioQuality.toLowerCase().includes("webm")
+			""
+		).toLowerCase();
+		// 魔改：未显式选择音频偏好时默认优选 opus（显式选择仍优先）
+		const standaloneAudioPref = prefAudioQualityRaw
+			? prefAudioQualityRaw.includes("opus") || prefAudioQualityRaw.includes("webm")
 				? "opus"
-				: "m4a";
+				: "m4a"
+			: "opus";
 
 		let bestStandaloneAudio = null;
 		let bestStandaloneScore = -Infinity;
@@ -3207,7 +3209,7 @@ class YtDownloaderApp {
 				formatHasAudio(format) &&
 				(format.vcodec === "none" || format.video_ext === "none")
 			) {
-				if (!showMoreFormats && format.ext === "webm") return;
+				// 魔改：不再在紧凑模式下隐藏 webm(opus) 音频条目
 
 				const audioExt = format.ext === "webm" ? "opus" : format.ext;
 

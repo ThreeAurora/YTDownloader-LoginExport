@@ -120,6 +120,11 @@
                     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                     <span data-translate="about">About</span>
                 </button>
+
+                <button class="nav-item" id="modNotesWin" title="Mod Notes">
+                    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    <span>魔改说明</span>
+                </button>
             </nav>
 
             <div class="sidebar-footer">
@@ -1444,9 +1449,19 @@
                                 </div>
                                 <select id="cookieSource">
                                     <option value="none" id="none" data-translate="none">None</option>
-                                    <option value="browser" data-translate="cookiesFromBrowser">Browser</option>
+                                    <!-- 魔改：移除 Browser 来源（新版 Chromium DPAPI/App-Bound 加密致 --cookies-from-browser 失败，yt-dlp#10927） -->
                                     <option value="file" data-translate="cookiesFromFile">File (Netscape format)</option>
                                 </select>
+                            </div>
+
+                            <!-- 魔改：应用内 YouTube 登录一键导入 cookies -->
+                            <div class="prefBox" id="youtubeLoginBox" style="flex-direction: column; align-items: flex-start; gap: 10px; width: 100%;">
+                                <span style="font-weight: 600;">登录 YouTube 自动导入 Cookies（若过期请重新登录）</span>
+                                <span style="opacity: 0.75; font-size: 0.92em;">在应用内窗口完成 Google 登录后，登录态自动写入上方 Cookies（Netscape 格式）并用于下载；绕开浏览器 cookie 加密（DPAPI/App-Bound）限制。</span>
+                                <div style="display: flex; align-items: center; gap: 12px;">
+                                    <button id="loginYoutubeBtn" class="btn greenBtn">登录 YouTube 并导入 Cookies</button>
+                                    <span id="loginStatusTxt" style="font-size: 0.92em; opacity: 0.85;"></span>
+                                </div>
                             </div>
 
                             <div class="prefBox" id="browserSelectBox">

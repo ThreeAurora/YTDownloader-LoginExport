@@ -26,14 +26,12 @@
     </ul>
     <p>Cookies 有时效，过期后请在设置页重新登录导入。</p>
     <script>
-        const { ipcRenderer } = require("electron");
-
         document.addEventListener("translations-loaded", () => {
             const storageTheme = localStorage.getItem("theme");
             document.documentElement.setAttribute("theme", storageTheme || "frappe");
 
             document.getElementById("back").addEventListener("click", () => {
-                ipcRenderer.send("close-secondary");
+                window.electronAPI.ipcRenderer.send("close-secondary");
             });
         });
     </script>

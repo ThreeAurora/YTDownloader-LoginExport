@@ -88,6 +88,11 @@ document.addEventListener("DOMContentLoaded", () => {
 			}
 		});
 	});
+
+	// 魔改：侧栏「魔改说明」→ 独立副窗口
+	getId("modNotesWin")?.addEventListener("click", () => {
+		window.electronAPI?.ipcRenderer?.send("load-page", "mod_notes.html");
+	});
 });
 
 getId("menuIcon")?.addEventListener("click", () => {
