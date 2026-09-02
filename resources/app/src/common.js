@@ -1,30 +1,112 @@
-const electron = require("electron");
-/**
- *
- * @param {string} id
- * @returns {any}
- */
-function getId(id) {
-	return document.getElementById(id);
+import { getId } from "./utils.js";
+
+export function switchView(targetViewId) {
+	const views = document.querySelectorAll(".page-view");
+	const navItems = document.querySelectorAll(".nav-item");
+
+	views.forEach((view) => {
+		if (view.id === targetViewId) {
+			view.classList.remove("hidden");
+			view.classList.add("active");
+		} else {
+			view.classList.remove("active");
+			view.classList.add("hidden");
+		}
+	});
+
+	navItems.forEach((item) => {
+		if (item.dataset.target === targetViewId) {
+			item.classList.add("active");
+		} else {
+			item.classList.remove("active");
+		}
+	});
+
+	if (targetViewId === "view-history" && typeof window.loadHistory === "function") {
+		window.loadHistory();
+	}
+
+	if (targetViewId === "view-compressor" && typeof window.initCompressorGPU === "function") {
+		window.initCompressorGPU();
+	}
+
+	if (targetViewId === "view-playlist" && window.playlistDownloader) {
+		window.playlistDownloader.initUI();
+		window.playlistDownloader.loadInitialConfig();
+		if (typeof window.playlistDownloader._updateEmptyStateUI === "function") {
+			window.playlistDownloader._updateEmptyStateUI();
+		}
+	}
+}
+window.switchView = switchView;
+
+if (window.electronAPI?.ipcRenderer) {
+	window.electronAPI.ipcRenderer.on("navigate-view", (_event, targetViewId) => {
+		switchView(targetViewId);
+	});
 }
 
-getId("menuIcon").addEventListener("click", () => {
-	const menuDisplay = getId("menu").style.display;
-	if (menuDisplay != "none" && menuDisplay != "") {
+export function toggleSidebar(collapse) {
+	const sidebar = getId("sidebar");
+	const mainContent = document.querySelector(".main-content-wrapper");
+
+	const isCurrentlyCollapsed = sidebar?.classList.contains("collapsed");
+	const shouldCollapse = collapse !== undefined ? collapse : !isCurrentlyCollapsed;
+
+	if (shouldCollapse) {
+		sidebar?.classList.add("collapsed");
+		mainContent?.classList.add("sidebar-collapsed");
+		localStorage.setItem("sidebarCollapsed", "true");
+	} else {
+		sidebar?.classList.remove("collapsed");
+		mainContent?.classList.remove("sidebar-collapsed");
+		localStorage.setItem("sidebarCollapsed", "false");
+	}
+}
+window.toggleSidebar = toggleSidebar;
+
+document.addEventListener("DOMContentLoaded", () => {
+	getId("sidebarCollapseBtn")?.addEventListener("click", () => toggleSidebar());
+	document.querySelector(".sidebar-brand-left")?.addEventListener("click", () => {
+		if (getId("sidebar")?.classList.contains("collapsed")) {
+			toggleSidebar(false);
+		}
+	});
+
+	if (localStorage.getItem("sidebarCollapsed") === "false") {
+		toggleSidebar(false);
+	} else {
+		toggleSidebar(true);
+	}
+
+	document.querySelectorAll(".nav-item").forEach((btn) => {
+		btn.addEventListener("click", (e) => {
+			e.preventDefault();
+			const target = btn.getAttribute("data-target");
+			if (target) {
+				switchView(target);
+			}
+		});
+	});
+});
+
+getId("menuIcon")?.addEventListener("click", () => {
+	const menuDisplay = getId("menu")?.style.display;
+	if (menuDisplay != "none" && menuDisplay != "" && menuDisplay != undefined) {
 		getId("menuIcon").style.transform = "rotate(0deg)";
 		let count = 0;
 		let opacity = 1;
 		const fade = setInterval(() => {
 			if (count >= 10) {
-				getId("menu").style.display = "none";
+				if (getId("menu")) getId("menu").style.display = "none";
 				clearInterval(fade);
 			} else {
 				opacity -= 0.1;
-				getId("menu").style.opacity = opacity.toFixed(3).toString();
+				if (getId("menu")) getId("menu").style.opacity = opacity.toFixed(3).toString();
 				count++;
 			}
 		}, 50);
-	} else {
+	} else if (getId("menu")) {
 		getId("menuIcon").style.transform = "rotate(90deg)";
 
 		setTimeout(() => {
@@ -34,59 +116,131 @@ getId("menuIcon").addEventListener("click", () => {
 	}
 });
 
-getId("themeToggle").addEventListener("change", () => {
-	localStorage.setItem("theme", getId("themeToggle").value);
+getId("themeToggle")?.addEventListener("change", () => {
+	const val = getId("themeToggle").value;
+	localStorage.setItem("theme", val);
 
 	const x = window.innerWidth;
 	const y = 0;
 	const maxRadius = Math.hypot(window.innerWidth, window.innerHeight);
 
-	const transition = document.startViewTransition(() => {
-		document.documentElement.setAttribute("theme", getId("themeToggle").value);
-	});
+	if (document.startViewTransition) {
+		const transition = document.startViewTransition(() => {
+			document.documentElement.setAttribute("theme", val);
+		});
 
-	transition.ready.then(() => {
-	  document.documentElement.animate(
-		{
-		  clipPath: [
-			`circle(0px at ${x}px ${y}px)`,
-			`circle(${maxRadius}px at ${x}px ${y}px)`
-		  ]
-		},
-		{
-		  duration: 1100,
-		  easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
-		  pseudoElement: '::view-transition-new(root)'
-		}
-	  );
-	});
+		transition.ready.then(() => {
+			document.documentElement.animate(
+				{
+					clipPath: [
+						`circle(0px at ${x}px ${y}px)`,
+						`circle(${maxRadius}px at ${x}px ${y}px)`
+					]
+				},
+				{
+					duration: 1100,
+					easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+					pseudoElement: '::view-transition-new(root)'
+				}
+			);
+		});
+	} else {
+		document.documentElement.setAttribute("theme", val);
+	}
 });
 
-const storageTheme = localStorage.getItem("theme");
-if (storageTheme) {
+function initTheme() {
+	const storageTheme = localStorage.getItem("theme") || "frappe";
 	document.documentElement.setAttribute("theme", storageTheme);
-	getId("themeToggle").value = storageTheme;
+	const themeToggleEl = getId("themeToggle");
+	if (themeToggleEl) {
+		themeToggleEl.value = storageTheme;
+	}
+}
+
+export function applyZoom(zoom) {
+	const factor = parseFloat(zoom) || 1;
+	if (window.electronAPI?.webFrame?.setZoomFactor) {
+		window.electronAPI.webFrame.setZoomFactor(factor);
+	}
+	const zoomSelect = getId("zoomLevelSelect");
+	if (zoomSelect && zoomSelect.value !== String(zoom)) {
+		zoomSelect.value = String(zoom);
+	}
+}
+window.applyZoom = applyZoom;
+
+export function initZoom() {
+	const savedZoom = localStorage.getItem("zoomLevel") || "1";
+	applyZoom(savedZoom);
+}
+window.initZoom = initZoom;
+
+const ZOOM_STEPS = [0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+
+window.addEventListener("keydown", (e) => {
+	if (!e.ctrlKey && !e.metaKey) return;
+	if (e.key === "=" || e.key === "+") {
+		e.preventDefault();
+		const current = parseFloat(localStorage.getItem("zoomLevel") || "1");
+		const next = ZOOM_STEPS.find((s) => s > current + 0.01) ?? 2;
+		localStorage.setItem("zoomLevel", String(next));
+		applyZoom(next);
+	} else if (e.key === "-") {
+		e.preventDefault();
+		const current = parseFloat(localStorage.getItem("zoomLevel") || "1");
+		const prev = [...ZOOM_STEPS].reverse().find((s) => s < current - 0.01) ?? 0.75;
+		localStorage.setItem("zoomLevel", String(prev));
+		applyZoom(prev);
+	} else if (e.key === "0") {
+		e.preventDefault();
+		localStorage.setItem("zoomLevel", "1");
+		applyZoom(1);
+	}
+});
+
+if (document.readyState === "loading") {
+	document.addEventListener("DOMContentLoaded", () => {
+		initTheme();
+		initZoom();
+	});
 } else {
-	getId("themeToggle").value = "frappe";
-	document.documentElement.setAttribute("theme", "frappe");
+	initTheme();
+	initZoom();
 }
 
 ////
 let advancedHidden = true;
 
-function advancedToggle() {
+export function advancedToggle() {
+	const advEl = getId("advanced");
+	const arrowVideo = getId("arrowLeftVideo");
+	const arrowAudio = getId("arrowLeftAudio");
+
 	if (advancedHidden) {
-		getId("advanced").style.display = "block";
-		getId("arrowLeftVideo").style.transform = "rotate(-90deg)";
-		getId("arrowLeftAudio").style.transform = "rotate(-90deg)";
+		if (advEl) {
+			advEl.style.display = "block";
+			void advEl.offsetHeight;
+			advEl.classList.add("open");
+		}
+		if (arrowVideo) arrowVideo.style.transform = "rotate(-90deg)";
+		if (arrowAudio) arrowAudio.style.transform = "rotate(-90deg)";
 		advancedHidden = false;
 	} else {
-		getId("advanced").style.display = "none";
-		getId("arrowLeftVideo").style.transform = "rotate(0deg)";
-		getId("arrowLeftAudio").style.transform = "rotate(0deg)";
+		if (advEl) {
+			advEl.classList.remove("open");
+			setTimeout(() => {
+				if (advancedHidden && advEl) {
+					advEl.style.display = "none";
+				}
+			}, 320);
+		}
+		if (arrowVideo) arrowVideo.style.transform = "rotate(0deg)";
+		if (arrowAudio) arrowAudio.style.transform = "rotate(0deg)";
 		advancedHidden = true;
 	}
 }
+window.advancedToggle = advancedToggle;
 
 // Check scroll go to top
 
@@ -99,29 +253,37 @@ function scrollFunction() {
 		document.body.scrollTop > 50 ||
 		document.documentElement.scrollTop > 50
 	) {
-		getId("goToTop").style.display = "block";
+		if (getId("goToTop")) getId("goToTop").style.display = "block";
 	} else {
-		getId("goToTop").style.display = "none";
+		if (getId("goToTop")) getId("goToTop").style.display = "none";
 	}
 }
 
 // Function to scroll go to top
 
-getId("goToTop").addEventListener("click", () => {
+getId("goToTop")?.addEventListener("click", () => {
 	window.scrollTo({top: 0, behavior: "smooth"});
 });
 
 // Showing and hiding error details
-function toggleErrorDetails() {
+export function toggleErrorDetails() {
+	if (!getId("errorDetails")) return;
 	const display = getComputedStyle(getId("errorDetails")).display;
 
 	if (display === "none") {
 		getId("errorDetails").style.display = "block";
 		// @ts-ignore
-		getId("errorBtn").textContent = i18n.__("errorDetails") + " ▼";
+		if (getId("errorBtn")) getId("errorBtn").textContent = (window.i18n?.__("errorDetails") || "Error Details") + " ▼";
 	} else {
 		getId("errorDetails").style.display = "none";
 		// @ts-ignore
-		getId("errorBtn").textContent = i18n.__("errorDetails") + " ◀";
+		if (getId("errorBtn")) getId("errorBtn").textContent = (window.i18n?.__("errorDetails") || "Error Details") + " ◀";
 	}
 }
+window.toggleErrorDetails = toggleErrorDetails;
+
+getId("errorBtn")?.addEventListener("click", toggleErrorDetails);
+getId("advancedVideoToggle")?.addEventListener("click", advancedToggle);
+getId("advancedAudioToggle")?.addEventListener("click", advancedToggle);
+
+

@@ -1,27 +1,22 @@
-const {spawn, execSync} = require("child_process");
-const path = require("path");
-const {ipcRenderer} = require("electron");
-const os = require("os");
-const si = require("systeminformation");
-const {existsSync} = require("fs");
-const crypto = require("crypto");
+import { getId, formatBytes, getFfmpegPath, getFfprobePath } from "./utils.js";
+
+const {
+	spawn,
+	path,
+	ipcRenderer,
+	os,
+	si,
+	fs: {existsSync},
+	crypto,
+	env,
+	__dirname,
+} = window.electronAPI;
 
 document.addEventListener("translations-loaded", () => {
 	window.i18n.translatePage();
 });
 
-let menuIsOpen = false;
-
-/**
- * @param {string} id
- */
-function getId(id) {
-	return document.getElementById(id);
-}
-
 const dom = {
-	menuIcon: getId("menuIcon"),
-	menu: getId("menu"),
 	fileInput: getId("fileInput"),
 	selectedFilesDiv: getId("selected-files"),
 	customFolderSelect: getId("custom-folder-select"),
@@ -29,14 +24,7 @@ const dom = {
 	compressBtn: getId("compress-btn"),
 	cancelBtn: getId("cancel-btn"),
 	compressionStatus: getId("compression-status"),
-	themeToggle: getId("themeToggle"),
 	outputFolderInput: getId("output-folder-input"),
-	preferenceWin: getId("preferenceWin"),
-	playlistWin: getId("playlistWin"),
-	aboutWin: getId("aboutWin"),
-	historyWin: getId("historyWin"),
-	homeWin: getId("homeWin"),
-	searchWin: getId("searchWin"),
 	encoder: getId("encoder"),
 	compressionSpeed: getId("compression-speed"),
 	videoQuality: getId("video-quality"),
@@ -53,88 +41,68 @@ const dom = {
 	advancedSettingsCollapse: getId("advanced-settings-collapse"),
 };
 
-function openMenu() {
-	dom.menuIcon.style.transform = "rotate(90deg)";
-	menuIsOpen = true;
-	dom.menu.style.display = "flex";
-
-	setTimeout(() => {
-		dom.menu.style.opacity = "1";
-	}, 20);
-}
-
-function closeMenu() {
-	dom.menuIcon.style.transform = "rotate(0deg)";
-	menuIsOpen = false;
-	let count = 0;
-	let opacity = 1;
-	const fade = setInterval(() => {
-		if (count >= 10) {
-			dom.menu.style.display = "none";
-			clearInterval(fade);
-		} else {
-			opacity -= 0.1;
-			dom.menu.style.opacity = opacity.toFixed(2);
-			count++;
-		}
-	}, 50);
-}
-
-dom.menuIcon.addEventListener("click", () => {
-	if (menuIsOpen) {
-		closeMenu();
-	} else {
-		openMenu();
-	}
-});
-
-const ffmpeg = getFfmpegPath();
-console.log(ffmpeg);
-
 const vaapi_device = "/dev/dri/renderD128";
 
-// Checking GPU
-si.graphics().then((info) => {
-	console.log({gpuInfo: info});
-	const platform = os.platform();
+let gpuChecked = false;
+let gpuChecking = false;
 
-	const selectorMap = {
-		nvidia: ".nvidia_opt",
-		amf: platform === "win32" ? ".amf_opt" : ".vaapi_opt",
-		qsv:
-			platform === "win32"
-				? ".qsv_opt"
-				: platform !== "darwin"
-					? ".vaapi_opt"
-					: null,
-		videotoolbox: platform === "darwin" ? ".videotoolbox_opt" : null,
-	};
+export function initCompressorGPU() {
+	if (gpuChecked || gpuChecking) return;
+	gpuChecking = true;
 
-	info.controllers.forEach((gpu) => {
-		const gpuName = gpu.vendor.toLowerCase();
-		const gpuModel = gpu.model.toLowerCase();
-		let selector = null;
+	// Checking GPU
+	si.graphics()
+		.then((info) => {
+			console.log({gpuInfo: info});
+			const platform = os.platform();
 
-		if (gpuName.includes("nvidia") || gpuModel.includes("nvidia")) {
-			selector = selectorMap.nvidia;
-		} else if (
-			gpuName.includes("advanced micro devices") ||
-			gpuModel.includes("amd")
-		) {
-			selector = selectorMap.amf;
-		} else if (gpuName.includes("intel")) {
-			selector = selectorMap.qsv;
-		} else if (platform === "darwin") {
-			selector = selectorMap.videotoolbox;
-		}
+			const selectorMap = {
+				nvidia: ".nvidia_opt",
+				amf: platform === "win32" ? ".amf_opt" : ".vaapi_opt",
+				qsv:
+					platform === "win32"
+						? ".qsv_opt"
+						: platform !== "darwin"
+							? ".vaapi_opt"
+							: null,
+				videotoolbox: platform === "darwin" ? ".videotoolbox_opt" : null,
+			};
 
-		if (selector) {
-			document.querySelectorAll(selector).forEach((opt) => {
-				opt.style.display = "block";
+			info.controllers.forEach((gpu) => {
+				const gpuName = (gpu.vendor || "").toLowerCase();
+				const gpuModel = (gpu.model || "").toLowerCase();
+				let selector = null;
+
+				if (gpuName.includes("nvidia") || gpuModel.includes("nvidia")) {
+					selector = selectorMap.nvidia;
+				} else if (
+					gpuName.includes("advanced micro devices") ||
+					gpuModel.includes("amd")
+				) {
+					selector = selectorMap.amf;
+				} else if (gpuName.includes("intel")) {
+					selector = selectorMap.qsv;
+				} else if (platform === "darwin") {
+					selector = selectorMap.videotoolbox;
+				}
+
+				if (selector) {
+					document.querySelectorAll(selector).forEach((opt) => {
+						opt.style.display = "block";
+					});
+				}
 			});
-		}
-	});
-});
+			gpuChecked = true;
+		})
+		.catch((err) => {
+			console.error("Failed to check GPU options:", err);
+			gpuChecked = false;
+		})
+		.finally(() => {
+			gpuChecking = false;
+		});
+}
+window.initCompressorGPU = initCompressorGPU;
 
 /** @type {File[]} */
 let files = [];
@@ -177,64 +145,84 @@ function updateSelectedFiles() {
 	dom.selectedFilesDiv.innerHTML = fileList || "No files selected";
 }
 
+let isCompressing = false;
+
 // Compression Logic
 dom.compressBtn.addEventListener("click", startCompression);
 dom.cancelBtn.addEventListener("click", cancelCompression);
 
 async function startCompression() {
+	if (isCompressing) return;
 	if (files.length === 0) return alert("Please select files first!");
 
-	const settings = getEncoderSettings();
-	isCancelled = false; // Ensure clean state at the start
-
-	for (const file of files) {
-		// Check if cancellation happened before starting this file
-		if (isCancelled) break;
-
-		const itemId = "f" + crypto.randomUUID().replace(/-/g, "");
-		currentItemId = itemId;
-
-		const outputPath = generateOutputPath(file, settings);
-
-		try {
-			await compressVideo(file, settings, itemId, outputPath);
-
-			if (isCancelled) {
-				break; // Break the loop if cancelled during compression
-			} else {
-				updateProgress("success", "", itemId);
-				const fileSavedElement = document.createElement("b");
-				fileSavedElement.textContent = i18n.__("fileSavedClickToOpen");
-				fileSavedElement.onclick = () => {
-					ipcRenderer.send("show-file", outputPath);
-				};
-				getId(itemId + "_prog")?.appendChild(fileSavedElement);
-			}
-		} catch (error) {
-			if (isCancelled) {
-				break; // Break loop if process was killed by cancel button
-			}
-
-			const errorElement = document.createElement("div");
-			errorElement.onclick = () => {
-				ipcRenderer.send("error_dialog", error.message);
-			};
-			errorElement.textContent = i18n.__("errorClickForDetails");
-			updateProgress("error", "", itemId);
-			getId(itemId + "_prog")?.appendChild(errorElement);
-		}
-	}
-
-	// Reset states when queue finishes or is broken
-	currentItemId = "";
+	isCompressing = true;
 	isCancelled = false;
+	if (dom.compressBtn) dom.compressBtn.disabled = true;
+	if (dom.fileInput) dom.fileInput.disabled = true;
+
+	try {
+		const settings = getEncoderSettings();
+
+		for (const file of files) {
+			// Check if cancellation happened before starting this file
+			if (isCancelled) break;
+
+			const itemId = "f" + crypto.randomUUID().replace(/-/g, "");
+			currentItemId = itemId;
+
+			const outputPath = generateOutputPath(file, settings);
+
+			try {
+				await compressVideo(file, settings, itemId, outputPath);
+
+				if (isCancelled) {
+					break; // Break the loop if cancelled during compression
+				} else {
+					updateProgress("success", "", itemId);
+					const fileSavedElement = document.createElement("b");
+					fileSavedElement.textContent = i18n.__("fileSavedClickToOpen");
+					fileSavedElement.onclick = () => {
+						ipcRenderer.send("show-file", outputPath);
+					};
+					getId(itemId + "_prog")?.appendChild(fileSavedElement);
+				}
+			} catch (error) {
+				if (isCancelled) {
+					break; // Break loop if process was killed by cancel button
+				}
+
+				const errorElement = document.createElement("div");
+				errorElement.onclick = () => {
+					ipcRenderer.send("error_dialog", error.message);
+				};
+				errorElement.textContent = i18n.__("errorClickForDetails");
+				updateProgress("error", "", itemId);
+				getId(itemId + "_prog")?.appendChild(errorElement);
+			}
+		}
+	} finally {
+		// Reset states when queue finishes or is broken
+		currentItemId = "";
+		isCancelled = false;
+		isCompressing = false;
+		if (dom.compressBtn) dom.compressBtn.disabled = false;
+		if (dom.fileInput) dom.fileInput.disabled = false;
+	}
 }
 
 function cancelCompression() {
 	isCancelled = true;
 
 	activeProcesses.forEach((child) => {
-		child.stdin.write("q");
+		try {
+			if (child.stdin && child.stdin.writable) {
+				child.stdin.write("q");
+			} else {
+				child.kill("SIGTERM");
+			}
+		} catch {
+			child.kill("SIGTERM");
+		}
 	});
 	activeProcesses.clear();
 
@@ -243,23 +231,37 @@ function cancelCompression() {
 
 /**
  * @param {File} file
+ * @param {{ extension: string; outputPath: string; outputSuffix: string }} settings
  */
 function generateOutputPath(file, settings) {
-	const output_extension = settings.extension;
-	const parsed_file = path.parse(file.path);
-	const outputDir = settings.outputPath || parsed_file.dir;
+	const outputExtension = settings.extension;
+	const parsedFile = path.parse(file.path);
+	const outputDir = settings.outputPath || parsedFile.dir;
+	const suffix = settings.outputSuffix ?? "_compressed";
+	const ext =
+		outputExtension === "unchanged" ? parsedFile.ext : `.${outputExtension}`;
 
-	if (output_extension === "unchanged") {
-		return path.join(
+	let outputPath = path.join(
+		outputDir,
+		`${parsedFile.name}${suffix}${ext}`,
+	);
+
+	// Guard against overwriting source file if output path equals input file
+	const isCaseInsensitive = os.platform() === "win32" || os.platform() === "darwin";
+	const resolvedOutput = path.resolve(outputPath);
+	const resolvedInput = path.resolve(file.path);
+	const isSamePath = isCaseInsensitive
+		? resolvedOutput.toLowerCase() === resolvedInput.toLowerCase()
+		: resolvedOutput === resolvedInput;
+
+	if (isSamePath) {
+		outputPath = path.join(
 			outputDir,
-			`${parsed_file.name}${settings.outputSuffix}${parsed_file.ext}`,
+			`${parsedFile.name}_compressed${ext}`,
 		);
 	}
 
-	return path.join(
-		outputDir,
-		`${parsed_file.name}_compressed.${output_extension}`,
-	);
+	return outputPath;
 }
 
 /**
@@ -273,7 +275,11 @@ async function compressVideo(file, settings, itemId, outputPath) {
 	console.log("Command: " + args.join(" "));
 
 	return new Promise((resolve, reject) => {
-		const child = spawn(ffmpeg, args);
+		const isTestMode = Boolean(window.electronAPI && window.electronAPI.isTest);
+		const mockSpawn = isTestMode ? (window.__mockSpawn || window.__mockFfmpeg) : null;
+		const spawnFn = mockSpawn || spawn;
+		const ffmpegPath = getFfmpegPath();
+		const child = spawnFn(ffmpegPath, args);
 
 		activeProcesses.add(child);
 		child.on("exit", () => {
@@ -294,6 +300,9 @@ async function compressVideo(file, settings, itemId, outputPath) {
 			const dataStr = data.toString();
 
 			stderrOutput += dataStr;
+			if (stderrOutput.length > 50000) {
+				stderrOutput = stderrOutput.slice(-30000);
+			}
 
 			// Parse duration
 			const duration_match = dataStr.match(/Duration:\s*([\d:.]+)/);
@@ -302,16 +311,17 @@ async function compressVideo(file, settings, itemId, outputPath) {
 			}
 
 			// Parse progress
-			const progressTime = dataStr.match(/time=(\d+:\d+:\d+\.\d+)/);
+			const progressTime = dataStr.match(/time=\s*(\d+(?::\d+){1,2}(?:\.\d+)?)/);
 			const totalSeconds = timeToSeconds(video_info.duration);
 			const currentSeconds =
 				progressTime && progressTime.length > 1
 					? timeToSeconds(progressTime[1])
 					: null;
 
-			if (currentSeconds && totalSeconds > 0 && !isCancelled) {
-				const progress = Math.round(
-					(currentSeconds / totalSeconds) * 100,
+			if (currentSeconds !== null && totalSeconds > 0 && !isCancelled) {
+				const progress = Math.min(
+					100,
+					Math.round((currentSeconds / totalSeconds) * 100),
 				);
 
 				const progElem = getId(itemId + "_prog");
@@ -843,14 +853,15 @@ async function buildFFmpegArgs(file, settings, outputPath) {
  * @returns {{ encoder: string; speed: string; videoQuality: string; audioQuality?: string; audioFormat: string, extension: string, outputPath:string, outputSuffix: string }} settings
  */
 function getEncoderSettings() {
+	const useSameFolder = dom.outputFolderInput ? dom.outputFolderInput.checked : true;
 	return {
 		encoder: dom.encoder.value,
 		speed: dom.compressionSpeed.value,
 		videoQuality: dom.videoQuality.value,
 		audioFormat: dom.audioFormat.value,
 		extension: dom.fileExtension.value,
-		outputPath: dom.customFolderPath.textContent,
-		outputSuffix: dom.outputSuffix.value,
+		outputPath: useSameFolder ? "" : (dom.customFolderPath?.textContent?.trim() || ""),
+		outputSuffix: dom.outputSuffix ? dom.outputSuffix.value : "_compressed",
 		targetSize: dom.targetSizeInput ? dom.targetSizeInput.value : "25",
 		targetPercent: dom.targetPercentInput
 			? dom.targetPercentInput.value
@@ -912,65 +923,20 @@ function createProgressItem(filename, status, data, itemId) {
 }
 
 /**
- * @param {number} bytes
- */
-function formatBytes(bytes) {
-	if (bytes === 0) return "0 B";
-	const units = ["B", "KB", "MB", "GB"];
-	const i = Math.floor(Math.log(bytes) / Math.log(1024));
-	return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
-}
-
-/**
  * @param {string} timeStr
  */
 function timeToSeconds(timeStr) {
 	if (!timeStr) return 0;
-	const [hh, mm, ss] = timeStr.split(":").map(parseFloat);
-	return hh * 3600 + mm * 60 + ss;
-}
-
-function getFfmpegPath() {
-	if (
-		process.env.YTDOWNLOADER_FFMPEG_PATH &&
-		existsSync(process.env.YTDOWNLOADER_FFMPEG_PATH)
-	) {
-		console.log("Using FFMPEG from YTDOWNLOADER_FFMPEG_PATH");
-		return process.env.YTDOWNLOADER_FFMPEG_PATH;
+	const parts = timeStr.split(":").map(parseFloat);
+	if (parts.length === 3) {
+		return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+	} else if (parts.length === 2) {
+		return (parts[0] || 0) * 60 + (parts[1] || 0);
+	} else if (parts.length === 1) {
+		return parts[0] || 0;
 	}
-
-	switch (os.platform()) {
-		case "win32":
-			return path.join(
-				os.homedir(),
-				".ytDownloader",
-				"ffmpeg",
-				"bin",
-				"ffmpeg.exe",
-			);
-		case "freebsd":
-			try {
-				return execSync("which ffmpeg").toString("utf8").trim();
-			} catch (error) {
-				console.error("ffmpeg not found on FreeBSD:", error);
-				return "";
-			}
-		default:
-			return path.join(
-				os.homedir(),
-				".ytDownloader",
-				"ffmpeg",
-				"bin",
-				"ffmpeg",
-			);
-	}
+	return 0;
 }
-
-dom.themeToggle.addEventListener("change", () => {
-	const theme = dom.themeToggle.value;
-	document.documentElement.setAttribute("theme", theme);
-	localStorage.setItem("theme", theme);
-});
 
 dom.outputFolderInput.addEventListener("change", (e) => {
 	const checked = e.target.checked;
@@ -983,46 +949,20 @@ dom.outputFolderInput.addEventListener("change", (e) => {
 	}
 });
 
-const storageTheme = localStorage.getItem("theme") || "frappe";
-document.documentElement.setAttribute("theme", storageTheme);
-dom.themeToggle.value = storageTheme;
-
 ipcRenderer.on("directory-path", (_event, msg) => {
 	dom.customFolderPath.textContent = msg;
 	dom.customFolderPath.style.display = "inline";
 });
 
-// DRWed Menu Router Engine
-const menuRoutes = {
-	preferenceWin: {page: "/preferences.html", channel: "load-page"},
-	playlistWin: {page: "/playlist.html", channel: "load-win"},
-	aboutWin: {page: "/about.html", channel: "load-page"},
-	modNotesWin: {page: "/mod_notes.html", channel: "load-page"},
-	historyWin: {page: "/history.html", channel: "load-page"},
-	homeWin: {page: "/index.html", channel: "load-win"},
-	searchWin: {page: "/search.html", channel: "load-win"},
-};
-
-Object.entries(menuRoutes).forEach(([domKey, route]) => {
-	dom[domKey]?.addEventListener("click", () => {
-		closeMenu();
-		ipcRenderer.send(route.channel, __dirname + route.page);
-	});
-});
-
 // Target Size / CRF Mode helper functions
-function getFfprobePath() {
-	const ffmpegPath = getFfmpegPath();
-	if (!ffmpegPath) return "";
-	const dir = path.dirname(ffmpegPath);
-	const ext = os.platform() === "win32" ? ".exe" : "";
-	return path.join(dir, "ffprobe" + ext);
-}
 
 function getVideoDuration(filePath) {
 	const ffprobe = getFfprobePath();
 	return new Promise((resolve, reject) => {
-		const child = spawn(ffprobe, [
+		const isTestMode = Boolean(window.electronAPI && window.electronAPI.isTest);
+		const mockSpawn = isTestMode ? (window.__mockSpawn || window.__mockFfmpeg) : null;
+		const spawnFn = mockSpawn || spawn;
+		const child = spawnFn(ffprobe, [
 			"-v",
 			"error",
 			"-show_entries",
@@ -1031,6 +971,7 @@ function getVideoDuration(filePath) {
 			"default=noprint_wrappers=1:nokey=1",
 			filePath,
 		]);
+
 		let output = "";
 		const timeout = setTimeout(() => {
 			child.kill();
@@ -1062,7 +1003,10 @@ function getVideoDuration(filePath) {
 function getVideoCodec(filePath) {
 	const ffprobe = getFfprobePath();
 	return new Promise((resolve) => {
-		const child = spawn(ffprobe, [
+		const isTestMode = Boolean(window.electronAPI && window.electronAPI.isTest);
+		const mockSpawn = isTestMode ? (window.__mockSpawn || window.__mockFfmpeg) : null;
+		const spawnFn = mockSpawn || spawn;
+		const child = spawnFn(ffprobe, [
 			"-v",
 			"error",
 			"-select_streams",

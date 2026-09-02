@@ -1,17 +1,48 @@
-const {shell, ipcRenderer, clipboard} = require("electron");
-const {default: YTDlpWrap} = require("yt-dlp-wrap-plus");
-const {constants} = require("fs/promises");
-const {homedir, platform} = require("os");
-const {join} = require("path");
+import {
+	getId as $,
+	escapeHtml,
+	showPopup,
+	formatTime,
+	formatVideoCodec,
+	formatBitrate,
+	formatHasAudio,
+	findFfmpeg,
+	ensureFfmpegLibsLoadable,
+	getJsRuntimePath,
+} from "./utils.js";
+import {selectVideo, selectAudio} from "./index.js";
+
 const {
+	shell,
+	ipcRenderer,
+	clipboard,
+	YTDlpWrap,
+	constants,
+	homedir,
+	platform,
+	tmpdir,
+	join,
 	mkdirSync,
 	accessSync,
 	promises,
 	existsSync,
+	chmodSync,
 	cpSync,
 	copyFileSync,
-} = require("fs");
-const {execSync, spawn} = require("child_process");
+	writeFileSync,
+	unlinkSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	execSync,
+	execFileSync,
+	spawn,
+	env,
+	setEnv,
+	windowsStore,
+	__dirname,
+	dirname,
+} = window.electronAPI;
 
 const CONSTANTS = {
 	DOM_IDS: {
@@ -28,6 +59,7 @@ const CONSTANTS = {
 		SELECT_LOCATION_BTN: "selectLocation",
 		DOWNLOAD_LIST: "list",
 		CLEAR_BTN: "clearBtn",
+		MULTIPLE_MODE_SECTION: "multipleModeSection",
 		// Hidden Info Panel
 		HIDDEN_PANEL: "hidden",
 		CLOSE_HIDDEN_BTN: "closeHidden",
@@ -37,6 +69,7 @@ const CONSTANTS = {
 		AUDIO_PRESENT_SECTION: "audioPresent",
 		QUIT_APP_BTN: "quitAppBtn",
 		// Format Selectors
+		VIDEO_FORMAT_SELECT_CONTAINER: "videoFormatSelectContainer",
 		VIDEO_FORMAT_SELECT: "videoFormatSelect",
 		AUDIO_FORMAT_SELECT: "audioFormatSelect",
 		AUDIO_FOR_VIDEO_FORMAT_SELECT: "audioForVideoFormatSelect",
@@ -49,6 +82,7 @@ const CONSTANTS = {
 		EXTRACT_QUALITY_SELECT: "extractQualitySelect",
 		// Advanced Options
 		CUSTOM_ARGS_INPUT: "customArgsInput", // Add this line
+		HOME_OUTPUT_FORMAT_SELECT: "homeOutputFormatSelect",
 		START_TIME: "min-time",
 		END_TIME: "max-time",
 		MIN_SLIDER: "min-slider",
@@ -60,17 +94,43 @@ const CONSTANTS = {
 		POPUP_BOX: "popupBox",
 		POPUP_BOX_MAC: "popupBoxMac",
 		POPUP_TEXT: "popupText",
+		POPUP_MESSAGE: "popupMessage",
 		POPUP_SVG: "popupSvg",
+		POPUP_HINT: "popupHint",
+		POPUP_ACTIONS: "popupActions",
+		POPUP_RETRY_BTN: "popupRetryBtn",
+		POPUP_BROWSE_BTN: "popupBrowseBtn",
+		POPUP_SYSTEM_BTN: "popupSystemBtn",
+		POPUP_GITHUB_BTN: "popupGithubBtn",
+		POPUP_QUIT_BTN: "popupQuitBtn",
 		YTDLP_DOWNLOAD_PROGRESS: "ytDlpDownloadProgress",
 		UPDATE_POPUP: "updatePopup",
 		UPDATE_POPUP_PROGRESS: "updateProgress",
 		UPDATE_POPUP_BAR: "progressBarFill",
+		// In-app update modal
+		APP_UPDATE_MODAL_BACKDROP: "appUpdateModalBackdrop",
+		APP_UPDATE_TITLE: "appUpdateTitle",
+		APP_UPDATE_BADGE: "appUpdateBadge",
+		APP_UPDATE_DATE: "appUpdateDate",
+		APP_UPDATE_NOTES: "appUpdateNotes",
+		APP_UPDATE_PROGRESS_CONTAINER: "appUpdateProgressContainer",
+		APP_UPDATE_PROGRESS_BAR: "appUpdateProgressBar",
+		APP_UPDATE_PROGRESS_PERCENT: "appUpdateProgressPercent",
+		APP_UPDATE_SPEED: "appUpdateSpeed",
+		APP_UPDATE_SIZE: "appUpdateSize",
+		APP_UPDATE_SKIP_BTN: "appUpdateSkipBtn",
+		APP_UPDATE_LATER_BTN: "appUpdateLaterBtn",
+		APP_UPDATE_ACTION_BTN: "appUpdateActionBtn",
+		APP_UPDATE_CLOSE_BTN: "appUpdateCloseBtn",
+		APP_UPDATE_READY_BANNER: "appUpdateReadyBanner",
+		UPDATE_CHECK_STATUS: "updateCheckStatus",
+		CHECK_FOR_UPDATES_BTN: "checkForUpdatesBtn",
+		UPDATE_CHANNEL_SELECT: "updateChannelSelect",
 		// Menu
 		MENU_ICON: "menuIcon",
 		MENU: "menu",
 		PREFERENCE_WIN: "preferenceWin",
 		ABOUT_WIN: "aboutWin",
-		MOD_NOTES_WIN: "modNotesWin",
 		PLAYLIST_WIN: "playlistWin",
 		HISTORY_WIN: "historyWin",
 		COMPRESSOR_WIN: "compressorWin",
@@ -85,13 +145,19 @@ const CONSTANTS = {
 		PREFERRED_AUDIO_QUALITY: "preferredAudioQuality",
 		PREFERRED_VIDEO_CODEC: "preferredVideoCodec",
 		SHOW_MORE_FORMATS: "showMoreFormats",
+		COOKIE_SOURCE: "cookieSource",
+		NETSCAPE_COOKIES: "netscapeCookies",
 		BROWSER_COOKIES: "browser",
+		PROXY_MODE: "proxyMode",
 		PROXY: "proxy",
-		CONFIG_PATH: "configPath",
 		AUTO_UPDATE: "autoUpdate",
+		UPDATE_CHANNEL: "updateChannel",
+		SKIPPED_UPDATE_VERSION: "skippedUpdateVersion",
 		CLOSE_TO_TRAY: "closeToTray",
 		YT_DLP_CUSTOM_ARGS: "customYtDlpArgs",
 		YT_DLP_SOURCE: "ytdlpSource",
+		AUTO_DOWNLOAD_ON_PASTE: "autoDownloadOnPaste",
+		CONCURRENT_FRAGMENTS: "concurrentFragments",
 	},
 	// yt-dlp source selectable in preferences.
 	// "nightly": app-managed standalone binary kept on the nightly channel.
@@ -101,13 +167,6 @@ const CONSTANTS = {
 		SYSTEM: "system",
 	},
 };
-
-/**
- * Shorthand for document.getElementById.
- * @param {string} id The ID of the DOM element.
- * @returns {HTMLElement | null}
- */
-const $ = (id) => document.getElementById(id);
 
 class YtDownloaderApp {
 	constructor() {
@@ -119,6 +178,7 @@ class YtDownloaderApp {
 			downloadDir: "",
 			maxActiveDownloads: 5,
 			currentDownloads: 0,
+			isFetchingInfo: false,
 			// Video metadata
 			videoInfo: {
 				title: "",
@@ -141,7 +201,11 @@ class YtDownloaderApp {
 				audioQuality: "",
 				videoCodec: "avc1",
 				showMoreFormats: false,
+				proxyMode: "system",
 				proxy: "",
+				cookieSource: "none",
+				cookiesPath: "",
+				netscapeCookies: "",
 				browserForCookies: "",
 				customYtDlpArgs: "",
 				videoOutputTemplate: "%(title)s.%(ext)s",
@@ -150,6 +214,18 @@ class YtDownloaderApp {
 			downloadControllers: new Map(),
 			downloadedItems: new Set(),
 			downloadQueue: [],
+			pausedJobs: new Map(),
+			activeJobs: new Map(),
+			mode: "single",
+			batchQueue: [],
+			batchPreset: {
+				type: "video",
+				quality: "1080",
+				format: "mp4",
+			},
+			isAutoMode:
+				localStorage.getItem("autoDownloadOnPaste") === "true",
+			activeInfoJsonPaths: new Map(),
 		};
 	}
 
@@ -162,25 +238,138 @@ class YtDownloaderApp {
 
 		this._setupDirectories();
 		this._configureTray();
+		this._configureGlobalHotkey();
+		this._setupAutoUpdaterListeners();
 		this._configureAutoUpdate();
 
 		try {
-			this.state.ytDlpPath = await this._findOrDownloadYtDlp();
-			this.state.ytDlp = new YTDlpWrap(this.state.ytDlpPath);
-			this.state.ffmpegPath = await this._findFfmpeg();
-			this._ensureFfmpegLibsLoadable(this.state.ffmpegPath);
-			this.state.jsRuntimePath = await this._getJsRuntimePath();
+			const isTestMode = Boolean(
+				window.electronAPI && window.electronAPI.isTest,
+			);
+			const mockYtDlp = isTestMode ? window.__mockYtDlp : null;
+			this.state.ytDlpPath = mockYtDlp
+				? "mock-ytdlp"
+				: await this._findOrDownloadYtDlp();
+			this.state.ytDlp = mockYtDlp || YTDlpWrap.new(this.state.ytDlpPath);
+			this.state.ffmpegPath = mockYtDlp
+				? "ffmpeg"
+				: await findFfmpeg();
+			ensureFfmpegLibsLoadable(this.state.ffmpegPath);
+			this.state.jsRuntimePath = mockYtDlp
+				? ""
+				: await getJsRuntimePath();
+
+			window.AppBinaries = {
+				ytDlpPath: this.state.ytDlpPath,
+				ytDlp: this.state.ytDlp,
+				ffmpegPath: this.state.ffmpegPath,
+				jsRuntimePath: this.state.jsRuntimePath,
+			};
 
 			console.log("yt-dlp path:", this.state.ytDlpPath);
 			console.log("ffmpeg path:", this.state.ffmpegPath);
 			console.log("JS runtime:", this.state.jsRuntimePath);
 
+			window.addEventListener("ytdownloader-reload-binaries", () => {
+				this.reloadBinaries();
+			});
+
+			// Defer background cleanup of orphaned temp files so it doesn't block startup
+			setTimeout(() => {
+				this._cleanupTempFiles();
+			}, 1000);
+
+			// Synchronously clean up the active session's info JSON on exit
+			window.addEventListener("beforeunload", () => {
+				if (this.state.videoInfo?.infoJsonPath) {
+					try {
+						if (existsSync(this.state.videoInfo.infoJsonPath)) {
+							unlinkSync(this.state.videoInfo.infoJsonPath);
+						}
+					} catch (_) {}
+				}
+			});
+
 			this._addEventListeners();
+			this._syncPresetDefaultsFromPreferences();
+			this._updateAutoModeUI();
+			this._updateEmptyStateUI();
 		} catch (error) {
 			console.error("Initialization failed:", error);
 			$(CONSTANTS.DOM_IDS.INCORRECT_MSG).textContent = error.message;
 			const pasteBtn = $(CONSTANTS.DOM_IDS.PASTE_URL_BTN);
 			if (pasteBtn) pasteBtn.style.display = "none";
+		}
+	}
+
+	/**
+	 * Dynamically re-resolves binary paths (yt-dlp, ffmpeg) in-memory
+	 * without requiring an application window reload.
+	 */
+	async reloadBinaries() {
+		if (this._reloadingBinariesPromise) {
+			await this._reloadingBinariesPromise;
+		}
+
+		this._reloadingBinariesPromise = (async () => {
+			try {
+				const isTestMode = Boolean(
+					window.electronAPI && window.electronAPI.isTest,
+				);
+				const mockYtDlp = isTestMode ? window.__mockYtDlp : null;
+
+				const ytdlpSource =
+					localStorage.getItem(
+						CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_SOURCE,
+					) || "bundled";
+				if (
+					ytdlpSource === CONSTANTS.YT_DLP_SOURCE.SYSTEM ||
+					ytdlpSource === "system"
+				) {
+					localStorage.removeItem(
+						CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_PATH,
+					);
+				}
+				const ytDlpPath = mockYtDlp
+					? "mock-ytdlp"
+					: await this._findOrDownloadYtDlp();
+				const ytDlp = mockYtDlp || YTDlpWrap.new(ytDlpPath);
+
+				const ffmpegPath = mockYtDlp
+					? "ffmpeg"
+					: await findFfmpeg();
+				ensureFfmpegLibsLoadable(ffmpegPath);
+
+				const jsRuntimePath = mockYtDlp
+					? ""
+					: await getJsRuntimePath();
+
+				// Atomic update of state once all resolvers complete
+				this.state.ytDlpPath = ytDlpPath;
+				this.state.ytDlp = ytDlp;
+				this.state.ffmpegPath = ffmpegPath;
+				this.state.jsRuntimePath = jsRuntimePath;
+
+				window.AppBinaries = {
+					ytDlpPath: this.state.ytDlpPath,
+					ytDlp: this.state.ytDlp,
+					ffmpegPath: this.state.ffmpegPath,
+					jsRuntimePath: this.state.jsRuntimePath,
+				};
+
+				console.log(
+					"Re-resolved binary paths in-memory:",
+					window.AppBinaries,
+				);
+			} catch (error) {
+				console.error("Binary re-resolution failed:", error);
+			}
+		})();
+
+		try {
+			await this._reloadingBinariesPromise;
+		} finally {
+			this._reloadingBinariesPromise = null;
 		}
 	}
 
@@ -234,7 +423,9 @@ class YtDownloaderApp {
 			this.state.downloadDir = defaultDownloadDir;
 		}
 
-		$(CONSTANTS.DOM_IDS.PATH_DISPLAY).textContent = this.state.downloadDir;
+		const pathEl = $(CONSTANTS.DOM_IDS.PATH_DISPLAY);
+		if (pathEl) pathEl.textContent = this.state.downloadDir;
+		this._updateHomePathDisplay();
 
 		if (!existsSync(this.state.downloadDir)) {
 			mkdirSync(this.state.downloadDir, {recursive: true});
@@ -255,6 +446,17 @@ class YtDownloaderApp {
 	}
 
 	/**
+	 * Restores the global hotkey setting from localStorage on startup.
+	 */
+	_configureGlobalHotkey() {
+		if (localStorage.getItem("globalHotkeyEnabled") === "true") {
+			const defaultAccel = platform() === "darwin" ? "Cmd+Shift+D" : "Ctrl+Shift+D";
+			const accelerator = localStorage.getItem("globalHotkeyAccelerator") || defaultAccel;
+			ipcRenderer.send("useGlobalHotkey", { enabled: true, accelerator });
+		}
+	}
+
+	/**
 	 * Checks settings to determine if auto-updates should be enabled.
 	 */
 	_configureAutoUpdate() {
@@ -265,28 +467,313 @@ class YtDownloaderApp {
 		) {
 			autoUpdate = false;
 		}
-		if (
-			process.windowsStore ||
-			process.env.YTDOWNLOADER_AUTO_UPDATES === "0"
-		) {
+		if (windowsStore || (env && env.YTDOWNLOADER_AUTO_UPDATES === "0")) {
 			autoUpdate = false;
 		}
+		const channel = localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.UPDATE_CHANNEL) || "stable";
+		ipcRenderer.send("set-update-channel", channel);
 		ipcRenderer.send("autoUpdate", autoUpdate);
+	}
+
+	/**
+	 * Sets up listeners and event handlers for application auto-updates.
+	 */
+	_setupAutoUpdaterListeners() {
+		const modal = $(CONSTANTS.DOM_IDS.APP_UPDATE_MODAL_BACKDROP);
+		const titleEl = $(CONSTANTS.DOM_IDS.APP_UPDATE_TITLE);
+		const badgeEl = $(CONSTANTS.DOM_IDS.APP_UPDATE_BADGE);
+		const dateEl = $(CONSTANTS.DOM_IDS.APP_UPDATE_DATE);
+		const notesEl = $(CONSTANTS.DOM_IDS.APP_UPDATE_NOTES);
+		const progressContainer = $(CONSTANTS.DOM_IDS.APP_UPDATE_PROGRESS_CONTAINER);
+		const readyBanner = $(CONSTANTS.DOM_IDS.APP_UPDATE_READY_BANNER);
+		const progressBar = $(CONSTANTS.DOM_IDS.APP_UPDATE_PROGRESS_BAR);
+		const progressPercent = $(CONSTANTS.DOM_IDS.APP_UPDATE_PROGRESS_PERCENT);
+		const speedEl = $(CONSTANTS.DOM_IDS.APP_UPDATE_SPEED);
+		const sizeEl = $(CONSTANTS.DOM_IDS.APP_UPDATE_SIZE);
+		const skipBtn = $(CONSTANTS.DOM_IDS.APP_UPDATE_SKIP_BTN);
+		const laterBtn = $(CONSTANTS.DOM_IDS.APP_UPDATE_LATER_BTN);
+		const actionBtn = $(CONSTANTS.DOM_IDS.APP_UPDATE_ACTION_BTN);
+		const closeBtn = $(CONSTANTS.DOM_IDS.APP_UPDATE_CLOSE_BTN);
+
+		const hideModal = () => {
+			if (modal) modal.classList.add("hidden");
+		};
+
+		const showModal = () => {
+			if (modal) modal.classList.remove("hidden");
+		};
+
+		if (closeBtn) closeBtn.addEventListener("click", hideModal);
+		if (laterBtn) laterBtn.addEventListener("click", hideModal);
+
+		ipcRenderer.on("checking-for-update", (_event, data) => {
+			if (data && data.isManual && window.__setUpdateStatus) {
+				window.__setUpdateStatus(
+					window.i18n ? window.i18n.__("checkingForUpdates") : "Checking for updates...",
+					"checking",
+				);
+			}
+		});
+
+		ipcRenderer.on("update-not-available", (_event, data) => {
+			if (data && data.isManual) {
+				if (window.__setUpdateStatus) {
+					const msg = window.i18n
+						? `${window.i18n.__("upToDate")} (v${data.version || ""})`
+						: `You're on the latest version (v${data.version || ""})`;
+					window.__setUpdateStatus(msg, "success");
+				}
+				this._showPopup(
+					window.i18n ? window.i18n.__("upToDate") : "You're on the latest version",
+					false,
+				);
+			}
+		});
+
+		ipcRenderer.on("update-error", (_event, data) => {
+			if (actionBtn) {
+				actionBtn.disabled = false;
+				actionBtn.textContent = window.i18n ? window.i18n.__("updateNow") : "Update Now";
+			}
+			if (progressContainer) {
+				progressContainer.classList.add("hidden");
+			}
+			const popup = $(CONSTANTS.DOM_IDS.UPDATE_POPUP);
+			if (popup) popup.style.display = "none";
+
+			if (data && data.isManual) {
+				const errMsg = data?.message || (window.i18n ? window.i18n.__("updateCheckFailed") : "Update failed");
+				if (window.__setUpdateStatus) {
+					window.__setUpdateStatus(errMsg, "error");
+				}
+				this._showPopup(errMsg, true);
+			}
+		});
+
+		ipcRenderer.on("update-available", (_event, info) => {
+			if (!info) return;
+
+			if (info.isManual && window.__setUpdateStatus) {
+				const availText = window.i18n ? window.i18n.__("updateAvailable") : "Update available";
+				window.__setUpdateStatus(`${availText}: v${info.version}`, "available");
+			}
+
+			const normalizeVersion = (v) => String(v || "").replace(/^v/i, "").trim().toLowerCase();
+			const rawSkipped = localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.SKIPPED_UPDATE_VERSION);
+			const skippedVersion = rawSkipped ? normalizeVersion(rawSkipped) : null;
+			const incomingVersion = normalizeVersion(info.version);
+
+			if (!info.isManual && skippedVersion && skippedVersion === incomingVersion) {
+				return;
+			}
+
+			if (titleEl) {
+				titleEl.textContent = window.i18n ? window.i18n.__("updateAvailable") : "Update Available";
+			}
+
+			if (badgeEl) {
+				badgeEl.textContent = `v${info.version}`;
+				if (info.isPrerelease) {
+					badgeEl.classList.add("beta-badge");
+				} else {
+					badgeEl.classList.remove("beta-badge");
+				}
+			}
+
+			if (dateEl) {
+				if (info.releaseDate) {
+					try {
+						dateEl.textContent = new Date(info.releaseDate).toLocaleDateString(undefined, {
+							year: "numeric",
+							month: "short",
+							day: "numeric",
+						});
+					} catch (_) {
+						dateEl.textContent = "";
+					}
+				} else {
+					dateEl.textContent = "";
+				}
+			}
+
+			if (notesEl) {
+				const rawNotes = info.releaseNotes;
+				if (rawNotes) {
+					const cleanText = String(rawNotes).replace(/<[^>]*>?/gm, "").trim();
+					notesEl.textContent = cleanText || (window.i18n ? window.i18n.__("noDetailsAvailable") : "No release notes available.");
+				} else {
+					notesEl.textContent = window.i18n ? window.i18n.__("noDetailsAvailable") : "No release notes available.";
+				}
+			}
+
+			if (progressContainer) progressContainer.classList.add("hidden");
+			if (readyBanner) readyBanner.classList.add("hidden");
+
+			if (skipBtn) {
+				skipBtn.style.display = "block";
+				skipBtn.onclick = () => {
+					localStorage.setItem(CONSTANTS.LOCAL_STORAGE_KEYS.SKIPPED_UPDATE_VERSION, normalizeVersion(info.version));
+					hideModal();
+				};
+			}
+
+			if (laterBtn) {
+				laterBtn.style.display = "block";
+				laterBtn.textContent = window.i18n ? window.i18n.__("remindLater") : "Remind me later";
+				laterBtn.onclick = hideModal;
+			}
+
+			if (actionBtn) {
+				actionBtn.disabled = false;
+				const isAppImage = info.isAppImage ?? Boolean(env?.APPIMAGE);
+				const isBrowserDownload =
+					info.isZipBuild ||
+					info.platform === "darwin" ||
+					(info.platform === "linux" && !isAppImage);
+
+				if (isBrowserDownload) {
+					actionBtn.textContent = window.i18n ? window.i18n.__("downloadInBrowser") : "Download in Browser";
+					actionBtn.onclick = () => {
+						const v = info.version;
+						if (info.platform === "win32") {
+							shell.openExternal(
+								`https://github.com/aandrew-me/ytDownloader/releases/download/v${v}/YTDownloader_Win.zip`,
+							);
+						} else if (info.platform === "darwin") {
+							const arch = info.arch === "arm64" ? "arm64" : "x64";
+							shell.openExternal(
+								`https://github.com/aandrew-me/ytDownloader/releases/download/v${v}/YTDownloader_Mac_${arch}.dmg`,
+							);
+						} else {
+							shell.openExternal(
+								`https://github.com/aandrew-me/ytDownloader/releases/tag/v${v}`,
+							);
+						}
+						hideModal();
+					};
+				} else {
+					actionBtn.textContent = window.i18n ? window.i18n.__("updateNow") : "Update Now";
+					actionBtn.onclick = () => {
+						actionBtn.disabled = true;
+						actionBtn.textContent = window.i18n ? window.i18n.__("downloadingUpdate") : "Downloading...";
+						if (progressContainer) progressContainer.classList.remove("hidden");
+						if (progressBar) progressBar.style.width = "0%";
+						if (progressPercent) progressPercent.textContent = "0%";
+						if (speedEl) speedEl.textContent = "...";
+						if (sizeEl) sizeEl.textContent = "...";
+						ipcRenderer.send("download-update");
+					};
+				}
+			}
+
+			showModal();
+		});
+
+		ipcRenderer.on("download-progress", (_event, data) => {
+			const percent = typeof data === "number" ? data : (data?.percent ?? 0);
+			const bytesPerSecond = typeof data === "object" ? (data?.bytesPerSecond ?? 0) : 0;
+			const transferred = typeof data === "object" ? (data?.transferred ?? 0) : 0;
+			const total = typeof data === "object" ? (data?.total ?? 0) : 0;
+
+			// In-app modal progress update
+			if (progressContainer) progressContainer.classList.remove("hidden");
+			if (progressBar) progressBar.style.width = `${percent.toFixed(1)}%`;
+			if (progressPercent) progressPercent.textContent = `${percent.toFixed(1)}%`;
+
+			if (speedEl) {
+				if (bytesPerSecond > 0) {
+					const mbps = (bytesPerSecond / (1024 * 1024)).toFixed(1);
+					speedEl.textContent = `${mbps} MB/s`;
+				} else {
+					speedEl.textContent = "";
+				}
+			}
+			if (sizeEl) {
+				if (total > 0) {
+					const transMB = (transferred / (1024 * 1024)).toFixed(1);
+					const totMB = (total / (1024 * 1024)).toFixed(1);
+					sizeEl.textContent = `${transMB} MB / ${totMB} MB`;
+				} else if (transferred > 0) {
+					const transMB = (transferred / (1024 * 1024)).toFixed(1);
+					sizeEl.textContent = `${transMB} MB`;
+				}
+			}
+
+			// Also update legacy float popup if modal is hidden
+			const popup = $(CONSTANTS.DOM_IDS.UPDATE_POPUP);
+			const textEl = $(CONSTANTS.DOM_IDS.UPDATE_POPUP_PROGRESS);
+			const barEl = $(CONSTANTS.DOM_IDS.UPDATE_POPUP_BAR);
+			if (popup && modal && modal.classList.contains("hidden")) {
+				popup.style.display = "flex";
+			}
+			if (textEl) textEl.textContent = `${percent.toFixed(1)}%`;
+			if (barEl) barEl.style.width = `${percent}%`;
+		});
+
+		ipcRenderer.on("update-downloaded", (_event, _data) => {
+			const popup = $(CONSTANTS.DOM_IDS.UPDATE_POPUP);
+			if (popup) popup.style.display = "none";
+
+			if (progressContainer) progressContainer.classList.add("hidden");
+			if (readyBanner) readyBanner.classList.remove("hidden");
+
+			if (titleEl) {
+				titleEl.textContent = window.i18n
+					? window.i18n.__("updateDownloadedReady")
+					: "Update Ready to Install";
+			}
+
+			if (skipBtn) skipBtn.style.display = "none";
+
+			if (laterBtn) {
+				laterBtn.textContent = window.i18n ? window.i18n.__("installOnExit") : "Install on exit";
+				laterBtn.onclick = () => {
+					hideModal();
+					this._showPopup(
+						window.i18n ? window.i18n.__("installOnExitNotice") : "Update will be installed when you close the app.",
+						false,
+					);
+				};
+			}
+
+			if (actionBtn) {
+				actionBtn.disabled = false;
+				actionBtn.textContent = window.i18n ? window.i18n.__("restartAndInstall") : "Restart & Install";
+				actionBtn.onclick = () => {
+					ipcRenderer.send("install-update", { restartNow: true });
+				};
+			}
+
+			this._showPopup(
+				window.i18n ? window.i18n.__("updateDownloadedReady") : "Update ready to install",
+				false,
+			);
+			showModal();
+		});
 	}
 
 	/**
 	 * Waits for the i18n module to load and then translates the static page content.
 	 */
 	async _initializeTranslations() {
+		if (window.i18n && window.i18n.translations) {
+			window.i18n.translatePage();
+			return;
+		}
 		return new Promise((resolve) => {
-			document.addEventListener(
-				"translations-loaded",
-				() => {
+			const handler = () => {
+				if (window.i18n) window.i18n.translatePage();
+				resolve();
+			};
+			document.addEventListener("translations-loaded", handler, {
+				once: true,
+			});
+			setTimeout(() => {
+				if (window.i18n && window.i18n.translatePage) {
 					window.i18n.translatePage();
-					resolve();
-				},
-				{once: true},
-			);
+				}
+				resolve();
+			}, 100);
 		});
 	}
 
@@ -299,14 +786,13 @@ class YtDownloaderApp {
 		const defaultYtDlpName = platform() === "win32" ? "ytdlp.exe" : "ytdlp";
 		const defaultYtDlpPath = join(hiddenDir, defaultYtDlpName);
 		const isMacOS = platform() === "darwin";
-		const isFreeBSD = platform() === "freebsd";
 
 		let executablePath = null;
 
 		// PRIORITY 1: Environment Variable
-		if (process.env.YTDOWNLOADER_YTDLP_PATH) {
-			if (existsSync(process.env.YTDOWNLOADER_YTDLP_PATH)) {
-				executablePath = process.env.YTDOWNLOADER_YTDLP_PATH;
+		if (env && env.YTDOWNLOADER_YTDLP_PATH) {
+			if (existsSync(env.YTDOWNLOADER_YTDLP_PATH)) {
+				executablePath = env.YTDOWNLOADER_YTDLP_PATH;
 			} else {
 				throw new Error(
 					"YTDOWNLOADER_YTDLP_PATH is set, but no file exists there.",
@@ -332,21 +818,8 @@ class YtDownloaderApp {
 			}
 		}
 
-		// PRIORITY 3: FreeBSD
-		else if (isFreeBSD) {
-			try {
-				executablePath = execSync("which yt-dlp").toString().trim();
-			} catch {
-				throw new Error(
-					"No yt-dlp found in PATH on FreeBSD. Please install it.",
-				);
-			}
-		}
-
-		// PRIORITY 4: User-selected source (Windows/Linux)
+		// PRIORITY 3: User-selected source (Windows/Linux)
 		else {
-			// Source is chosen in preferences; defaults to the nightly,
-			// app-managed binary so YouTube fixes arrive fastest.
 			const source =
 				localStorage.getItem(
 					CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_SOURCE,
@@ -354,7 +827,10 @@ class YtDownloaderApp {
 
 			// "system": use yt-dlp from PATH (apt/pip/etc.). Falls back to the
 			// managed binary if nothing is found in PATH.
-			if (source === CONSTANTS.YT_DLP_SOURCE.SYSTEM) {
+			if (
+				source === CONSTANTS.YT_DLP_SOURCE.SYSTEM ||
+				source === "system"
+			) {
 				try {
 					let systemPath;
 					if (platform() === "win32") {
@@ -440,7 +916,8 @@ class YtDownloaderApp {
 					return;
 				}
 
-				const releaseChannel = "nightly";
+				const releaseChannel =
+					localStorage.getItem("ytdlpChannel") || "nightly";
 
 				const updateProc = spawn(executablePath, [
 					"--update-to",
@@ -474,232 +951,287 @@ class YtDownloaderApp {
 
 	/**
 	 * Checks for the presence of the yt-dlp binary at the default path.
-	 * If not found, it attempts to download it from GitHub.
+	 * If not found, it attempts to download it from GitHub with channel fallbacks.
+	 * If download fails, presents interactive recovery options (retry, browse, system PATH, manual download, quit).
 	 *
 	 * @param {string} defaultYtDlpPath The expected path to the yt-dlp binary.
 	 * @returns {Promise<string>} A promise that resolves with the path to the yt-dlp binary.
-	 * @throws {Error} Throws an error if the download fails.
 	 */
 	async ensureYtDlpBinary(defaultYtDlpPath) {
 		try {
 			await promises.access(defaultYtDlpPath);
-
 			return defaultYtDlpPath;
 		} catch {
-			console.log("yt-dlp not found, downloading...");
+			// File not found, proceed to download attempt
+		}
 
-			$(CONSTANTS.DOM_IDS.POPUP_BOX).style.display = "block";
-			$(CONSTANTS.DOM_IDS.POPUP_SVG).style.display = "inline";
-			document.querySelector("#popupBox p").textContent = i18n.__(
-				"downloadingNecessaryFilesWait",
-			);
+		console.log("yt-dlp not found, downloading...");
 
+		const hiddenDir = join(homedir(), ".ytDownloader");
+		try {
+			if (!existsSync(hiddenDir)) {
+				mkdirSync(hiddenDir, { recursive: true });
+			}
+		} catch (_) {}
+
+		const popupBox = $(CONSTANTS.DOM_IDS.POPUP_BOX);
+		const popupSvg = $(CONSTANTS.DOM_IDS.POPUP_SVG);
+		const popupMsg = $(CONSTANTS.DOM_IDS.POPUP_MESSAGE) || document.querySelector("#popupBox p");
+		const progressEl = $(CONSTANTS.DOM_IDS.YTDLP_DOWNLOAD_PROGRESS);
+		const popupHint = $(CONSTANTS.DOM_IDS.POPUP_HINT);
+		const popupActions = $(CONSTANTS.DOM_IDS.POPUP_ACTIONS);
+		const retryBtn = $(CONSTANTS.DOM_IDS.POPUP_RETRY_BTN);
+		const browseBtn = $(CONSTANTS.DOM_IDS.POPUP_BROWSE_BTN);
+		const systemBtn = $(CONSTANTS.DOM_IDS.POPUP_SYSTEM_BTN);
+		const githubBtn = $(CONSTANTS.DOM_IDS.POPUP_GITHUB_BTN);
+		const quitBtn = $(CONSTANTS.DOM_IDS.POPUP_QUIT_BTN);
+
+		const isValidYtDlpBinary = (filePath) => {
 			try {
-				await YTDlpWrap.downloadFromGithub(
-					defaultYtDlpPath,
-					undefined,
-					undefined,
-					(progress, _d, _t) => {
-						$(
-							CONSTANTS.DOM_IDS.YTDLP_DOWNLOAD_PROGRESS,
-						).textContent =
-							i18n.__("progress") +
-							`: ${(progress * 100).toFixed(2)}%`;
-					},
-				);
-
-				$(CONSTANTS.DOM_IDS.POPUP_BOX).style.display = "none";
-
-				localStorage.setItem(
-					CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_PATH,
-					defaultYtDlpPath,
-				);
-
-				return defaultYtDlpPath;
-			} catch (downloadError) {
-				$(CONSTANTS.DOM_IDS.YTDLP_DOWNLOAD_PROGRESS).textContent = "";
-
-				console.error("Failed to download yt-dlp:", downloadError);
-
-				document.querySelector("#popupBox p").textContent = i18n.__(
-					"errorFailedFileDownload",
-				);
-				$(CONSTANTS.DOM_IDS.POPUP_SVG).style.display = "none";
-
-				const tryAgainBtn = document.createElement("button");
-				tryAgainBtn.id = "tryBtn";
-				tryAgainBtn.textContent = i18n.__("tryAgain");
-				tryAgainBtn.addEventListener("click", () => {
-					// TODO: Improve it
-					ipcRenderer.send("reload");
+				if (!filePath || !existsSync(filePath)) return false;
+				if (platform() !== "win32") {
+					try {
+						chmodSync(filePath, 0o755);
+					} catch (_) {}
+				}
+				const output = execFileSync(filePath, ["--version"], {
+					timeout: 3500,
+					stdio: ["ignore", "pipe", "pipe"],
+					encoding: "utf-8",
+					windowsHide: true,
 				});
-				document.getElementById("popup").appendChild(tryAgainBtn);
-
-				throw new Error("Failed to download yt-dlp.");
+				const version = output ? output.trim() : "";
+				return /^\d{4}\.\d{2}\.\d{2}/.test(version);
+			} catch (err) {
+				console.warn("Validation of yt-dlp binary failed:", err);
+				return false;
 			}
-		}
-	}
+		};
 
-	/**
-	 * Locates the ffmpeg executable path.
-	 * @returns {Promise<string>} A promise that resolves with the path to ffmpeg.
-	 */
-	async _findFfmpeg() {
-		// Priority 1: Environment Variable
-		if (process.env.YTDOWNLOADER_FFMPEG_PATH) {
-			if (existsSync(process.env.YTDOWNLOADER_FFMPEG_PATH)) {
-				return process.env.YTDOWNLOADER_FFMPEG_PATH;
+		const showDownloadingState = () => {
+			if (popupBox) popupBox.style.display = "block";
+			if (popupSvg) popupSvg.style.display = "flex";
+			if (popupActions) popupActions.style.display = "none";
+			if (popupHint) popupHint.style.display = "none";
+			if (popupMsg) {
+				popupMsg.textContent = i18n.__("downloadingNecessaryFilesWait");
 			}
-			throw new Error(
-				"YTDOWNLOADER_FFMPEG_PATH is set, but no file exists there.",
-			);
-		}
+			if (progressEl) progressEl.textContent = "";
+		};
 
-		// Priority 2: System-installed (FreeBSD)
-		if (platform() === "freebsd") {
-			try {
-				return execSync("which ffmpeg").toString().trim();
-			} catch {
-				throw new Error(
-					"No ffmpeg found in PATH on FreeBSD. App may not work correctly.",
-				);
-			}
-		}
+		const tryDownload = async () => {
+			const preferredChannel =
+				localStorage.getItem("ytdlpChannel") || "nightly";
+			const channelsToTry = [
+				preferredChannel,
+				"stable",
+				"master",
+			].filter((val, idx, arr) => arr.indexOf(val) === idx);
 
-		// Priority 3: Bundled ffmpeg
-		const bundledDir = join(__dirname, "..", "ffmpeg");
-		const targetDir = join(homedir(), ".ytDownloader", "ffmpeg");
-
-		const isWin = platform() === "win32";
-		const ffmpegName = isWin ? "ffmpeg.exe" : "ffmpeg";
-		const targetFfmpegFile = join(targetDir, "bin", ffmpegName);
-
-		// Check if the folder has already been copied
-		if (!existsSync(targetFfmpegFile)) {
-			if (existsSync(bundledDir)) {
+			let lastError = null;
+			for (const channel of channelsToTry) {
 				try {
-					cpSync(bundledDir, targetDir, {recursive: true});
-				} catch {
-					console.error("Failed to copy bundled ffmpeg.");
+					console.log(`Attempting yt-dlp download from channel: ${channel}`);
+					showDownloadingState();
+					await YTDlpWrap.downloadFromGithub(
+						defaultYtDlpPath,
+						undefined,
+						undefined,
+						(progress) => {
+							if (progressEl) {
+								progressEl.textContent =
+									i18n.__("progress") +
+									`: ${(progress * 100).toFixed(2)}%`;
+							}
+						},
+						channel,
+					);
 
-					return "";
-				}
-			} else {
-				return "";
-			}
-		}
+					if (!isValidYtDlpBinary(defaultYtDlpPath)) {
+						try {
+							if (existsSync(defaultYtDlpPath)) {
+								unlinkSync(defaultYtDlpPath);
+							}
+						} catch (_) {}
+						throw new Error(
+							`Downloaded binary from channel ${channel} failed integrity check.`,
+						);
+					}
 
-		return join(targetDir, "bin");
-	}
-
-	/**
-	 * The bundled Linux ffmpeg is dynamically linked and ships its shared
-	 * libraries in a sibling "lib" directory, but its RPATH is broken, so it
-	 * cannot find them on its own. yt-dlp spawns ffmpeg as a child process, so
-	 * we expose that lib directory via LD_LIBRARY_PATH (inherited by children).
-	 * Without this, audio extraction fails with "ffprobe and ffmpeg not found".
-	 * @param {string} ffmpegPath Path to the bundled ffmpeg "bin" directory.
-	 */
-	_ensureFfmpegLibsLoadable(ffmpegPath) {
-		if (platform() !== "linux" || !ffmpegPath) {
-			return;
-		}
-
-		const libDir = join(ffmpegPath, "..", "lib");
-		if (!existsSync(libDir)) {
-			return;
-		}
-
-		const current = process.env.LD_LIBRARY_PATH;
-		if (current) {
-			if (!current.split(":").includes(libDir)) {
-				process.env.LD_LIBRARY_PATH = `${libDir}:${current}`;
-			}
-		} else {
-			process.env.LD_LIBRARY_PATH = libDir;
-		}
-	}
-
-	/**
-	 * Determines the JavaScript runtime path for yt-dlp.
-	 * @returns {Promise<string>} A promise that resolves with the JS runtime path.
-	 */
-	async _getJsRuntimePath() {
-		const exeName = "node";
-
-		// Priority 1: Environment Variable (Node)
-		if (process.env.YTDOWNLOADER_NODE_PATH) {
-			if (existsSync(process.env.YTDOWNLOADER_NODE_PATH)) {
-				return `$node:${process.env.YTDOWNLOADER_NODE_PATH}`;
-			}
-
-			return "";
-		}
-
-		// Priority 2: Environment Variable (Deno)
-		if (process.env.YTDOWNLOADER_DENO_PATH) {
-			if (existsSync(process.env.YTDOWNLOADER_DENO_PATH)) {
-				return `$deno:${process.env.YTDOWNLOADER_DENO_PATH}`;
-			}
-
-			return "";
-		}
-
-		// Priority 3: System-installed Deno (macOS Fallback)
-		if (platform() === "darwin") {
-			const possiblePaths = [
-				"/opt/homebrew/bin/deno",
-				"/usr/local/bin/deno",
-			];
-
-			for (const p of possiblePaths) {
-				if (existsSync(p)) {
-					return `deno:${p}`;
+					if (popupBox) popupBox.style.display = "none";
+					localStorage.setItem(
+						CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_PATH,
+						defaultYtDlpPath,
+					);
+					return defaultYtDlpPath;
+				} catch (err) {
+					console.warn(`yt-dlp download failed on channel ${channel}:`, err);
+					lastError = err;
 				}
 			}
+			throw lastError || new Error("Failed to download yt-dlp.");
+		};
 
-			console.log("No Deno installation found");
+		try {
+			return await tryDownload();
+		} catch (initialError) {
+			console.error("All download channels failed:", initialError);
 
-			return "";
+			return new Promise((resolve) => {
+				const showRecoveryUI = () => {
+					if (popupBox) popupBox.style.display = "block";
+					if (popupSvg) popupSvg.style.display = "none";
+					if (progressEl) progressEl.textContent = "";
+					if (popupMsg) {
+						popupMsg.textContent = i18n.__("errorFailedFileDownload");
+					}
+					if (popupHint) {
+						popupHint.textContent = i18n.__("downloadFailedHint");
+						popupHint.style.color = "";
+						popupHint.style.display = "block";
+					}
+
+					let detectedSystemPath = null;
+					try {
+						if (platform() === "win32") {
+							detectedSystemPath = execSync("where yt-dlp")
+								.toString()
+								.split(/\r?\n/)[0]
+								.trim();
+						} else {
+							detectedSystemPath = execSync("command -v yt-dlp")
+								.toString()
+								.trim();
+						}
+						if (detectedSystemPath && !isValidYtDlpBinary(detectedSystemPath)) {
+							detectedSystemPath = null;
+						}
+					} catch (_) {
+						detectedSystemPath = null;
+					}
+
+					if (systemBtn) {
+						if (detectedSystemPath) {
+							systemBtn.style.display = "flex";
+							systemBtn.onclick = () => {
+								localStorage.setItem(
+									CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_SOURCE,
+									CONSTANTS.YT_DLP_SOURCE.SYSTEM,
+								);
+								localStorage.setItem(
+									CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_PATH,
+									detectedSystemPath,
+								);
+
+								const depYtdlpSource = $("depYtdlpSource");
+								if (depYtdlpSource) {
+									depYtdlpSource.value = "system";
+									depYtdlpSource.dispatchEvent(new Event("change"));
+								}
+
+								if (popupBox) popupBox.style.display = "none";
+								cleanupListeners();
+								resolve(detectedSystemPath);
+							};
+						} else {
+							systemBtn.style.display = "none";
+						}
+					}
+
+					if (popupActions) popupActions.style.display = "flex";
+				};
+
+				const cleanupListeners = () => {
+					if (retryBtn) retryBtn.onclick = null;
+					if (browseBtn) browseBtn.onclick = null;
+					if (githubBtn) githubBtn.onclick = null;
+					if (quitBtn) quitBtn.onclick = null;
+					if (systemBtn) systemBtn.onclick = null;
+				};
+
+				if (retryBtn) {
+					retryBtn.onclick = async () => {
+						try {
+							const downloadedPath = await tryDownload();
+							cleanupListeners();
+							resolve(downloadedPath);
+						} catch (retryErr) {
+							console.error("Retry failed:", retryErr);
+							showRecoveryUI();
+						}
+					};
+				}
+
+				if (browseBtn) {
+					browseBtn.onclick = async () => {
+						try {
+							const chosenPath = await ipcRenderer.invoke("select-ytdlp-file");
+							if (!chosenPath) return;
+
+							if (!isValidYtDlpBinary(chosenPath)) {
+								if (popupHint) {
+									popupHint.textContent = i18n.__("invalidBinarySelected");
+									popupHint.style.color = "var(--redBtn, #ef4444)";
+									popupHint.style.display = "block";
+								}
+								return;
+							}
+
+							// Copy verified binary to where yt-dlp is usually placed
+							if (chosenPath !== defaultYtDlpPath) {
+								copyFileSync(chosenPath, defaultYtDlpPath);
+								if (platform() !== "win32") {
+									try {
+										chmodSync(defaultYtDlpPath, 0o755);
+									} catch (_) {}
+								}
+							}
+
+							localStorage.setItem(
+								CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_PATH,
+								defaultYtDlpPath,
+							);
+							localStorage.setItem(
+								CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_SOURCE,
+								"bundled",
+							);
+
+							const depYtdlpSource = $("depYtdlpSource");
+							if (depYtdlpSource) {
+								depYtdlpSource.value = "bundled";
+								depYtdlpSource.dispatchEvent(new Event("change"));
+							}
+
+							if (popupBox) popupBox.style.display = "none";
+							cleanupListeners();
+							resolve(defaultYtDlpPath);
+						} catch (dialogErr) {
+							console.error("Browse failed:", dialogErr);
+						}
+					};
+				}
+
+				if (githubBtn) {
+					githubBtn.onclick = () => {
+						shell.openExternal("https://github.com/yt-dlp/yt-dlp/releases");
+					};
+				}
+
+				if (quitBtn) {
+					quitBtn.onclick = () => {
+						ipcRenderer.send("quit");
+					};
+				}
+
+				showRecoveryUI();
+			});
 		}
-
-		// Priority 4: Bundled Node Runtime
-		const isWin = platform() === "win32";
-		const nodeName = isWin ? "node.exe" : "node";
-
-		const bundledNodePath = join(__dirname, "..", nodeName);
-		const targetDir = join(homedir(), ".ytDownloader");
-		const targetNodeFile = join(targetDir, nodeName);
-
-		// Check if folder has already been copied
-		if (existsSync(targetNodeFile)) {
-			return `${exeName}:${targetNodeFile}`;
-		}
-
-		// Copy to .ytDownloader
-		if (existsSync(bundledNodePath)) {
-			if (!existsSync(targetDir)) {
-				mkdirSync(targetDir, {recursive: true});
-			}
-
-			try {
-				copyFileSync(bundledNodePath, targetNodeFile);
-			} catch {
-				console.error("Failed to copy bundled Node runtime.");
-
-				return "";
-			}
-
-			return `${exeName}:${targetNodeFile}`;
-		}
-
-		return "";
 	}
 
 	/**
 	 * Loads various settings from localStorage into the application state.
 	 */
-	async _loadSettings(url) {
+	async _loadSettings(url, updateUI = true) {
 		const prefs = this.state.preferences;
 		prefs.videoQuality =
 			Number(
@@ -719,10 +1251,17 @@ class YtDownloaderApp {
 			localStorage.getItem(
 				CONSTANTS.LOCAL_STORAGE_KEYS.SHOW_MORE_FORMATS,
 			) === "true";
-		prefs.proxy =
-			localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.PROXY) || "";
+		prefs.proxyMode =
+			localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.PROXY_MODE) ||
+			(localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.PROXY)
+				? "custom"
+				: "system");
 
-		if (!prefs.proxy) {
+		if (prefs.proxyMode === "custom") {
+			prefs.proxy =
+				localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.PROXY) || "";
+		} else if (prefs.proxyMode === "system") {
+			prefs.proxy = "";
 			try {
 				const systemProxy = await ipcRenderer.invoke(
 					"get-system-proxy",
@@ -736,6 +1275,34 @@ class YtDownloaderApp {
 			} catch (err) {
 				console.error("Failed to get system proxy:", err);
 			}
+		} else {
+			prefs.proxy = "";
+		}
+
+		prefs.cookieSource =
+			localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.COOKIE_SOURCE) ||
+			(localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.BROWSER_COOKIES)
+				? "browser"
+				: "none");
+		prefs.netscapeCookies =
+			localStorage.getItem(
+				CONSTANTS.LOCAL_STORAGE_KEYS.NETSCAPE_COOKIES,
+			) || "";
+		try {
+			prefs.cookiesPath = await ipcRenderer.invoke("get-cookies-path");
+			if (
+				prefs.cookieSource === "file" &&
+				prefs.cookiesPath &&
+				prefs.netscapeCookies &&
+				prefs.netscapeCookies.trim()
+			) {
+				writeFileSync(prefs.cookiesPath, prefs.netscapeCookies, {
+					encoding: "utf8",
+					mode: 0o600,
+				});
+			}
+		} catch (e) {
+			console.error("Error setting up cookies path:", e);
 		}
 
 		prefs.browserForCookies =
@@ -746,9 +1313,6 @@ class YtDownloaderApp {
 			localStorage.getItem(
 				CONSTANTS.LOCAL_STORAGE_KEYS.YT_DLP_CUSTOM_ARGS,
 			) || "";
-		prefs.configPath =
-			localStorage.getItem(CONSTANTS.LOCAL_STORAGE_KEYS.CONFIG_PATH) ||
-			"";
 		prefs.videoOutputTemplate =
 			localStorage.getItem("filenameTemplateVideo") ||
 			"%(title)s.%(ext)s";
@@ -762,8 +1326,20 @@ class YtDownloaderApp {
 		);
 		this.state.maxActiveDownloads = maxDownloads >= 1 ? maxDownloads : 5;
 
-		// Update UI with loaded settings
-		$(CONSTANTS.DOM_IDS.CUSTOM_ARGS_INPUT).value = prefs.customYtDlpArgs;
+		const concurrentFragments = Number(
+			localStorage.getItem(
+				CONSTANTS.LOCAL_STORAGE_KEYS.CONCURRENT_FRAGMENTS,
+			),
+		);
+		prefs.concurrentFragments =
+			concurrentFragments >= 1
+				? Math.min(16, Math.floor(concurrentFragments))
+				: 1;
+
+		if (updateUI) {
+			const customArgsInput = $(CONSTANTS.DOM_IDS.CUSTOM_ARGS_INPUT);
+			if (customArgsInput) customArgsInput.value = prefs.customYtDlpArgs;
+		}
 
 		const downloadDir = localStorage.getItem(
 			CONSTANTS.LOCAL_STORAGE_KEYS.DOWNLOAD_PATH,
@@ -771,8 +1347,33 @@ class YtDownloaderApp {
 
 		if (downloadDir) {
 			this.state.downloadDir = downloadDir;
-			$(CONSTANTS.DOM_IDS.PATH_DISPLAY).textContent = downloadDir;
+			if (updateUI) {
+				const pathEl = $(CONSTANTS.DOM_IDS.PATH_DISPLAY);
+				if (pathEl) pathEl.textContent = downloadDir;
+				this._updateHomePathDisplay();
+			}
 		}
+	}
+
+	/**
+	 * Returns yt-dlp cookie arguments based on user preference.
+	 * @returns {string[]}
+	 */
+	_getCookieArgs() {
+		const {cookieSource, browserForCookies, cookiesPath} =
+			this.state.preferences;
+		if (
+			cookieSource === "file" &&
+			cookiesPath &&
+			existsSync(cookiesPath) &&
+			statSync(cookiesPath).size > 0
+		) {
+			return ["--cookies", cookiesPath];
+		}
+		if (cookieSource === "browser" && browserForCookies) {
+			return ["--cookies-from-browser", browserForCookies];
+		}
+		return [];
 	}
 
 	/**
@@ -782,6 +1383,65 @@ class YtDownloaderApp {
 		$(CONSTANTS.DOM_IDS.PASTE_URL_BTN)?.addEventListener("click", () =>
 			this.pasteAndGetInfo(),
 		);
+
+		// Mode switcher listeners
+		document
+			.getElementById("modeSingleBtn")
+			?.addEventListener("click", () => this._switchHomeMode("single"));
+		document
+			.getElementById("modeMultipleBtn")
+			?.addEventListener("click", () => this._switchHomeMode("multiple"));
+		document
+			.getElementById("autoDownloadToggleBtn")
+			?.addEventListener("click", () => {
+				this.state.isAutoMode = !this.state.isAutoMode;
+				localStorage.setItem(
+					CONSTANTS.LOCAL_STORAGE_KEYS.AUTO_DOWNLOAD_ON_PASTE,
+					this.state.isAutoMode ? "true" : "false",
+				);
+				this._updateAutoModeUI();
+			});
+		document
+			.getElementById("homePathPicker")
+			?.addEventListener("click", () =>
+				ipcRenderer.send("select-location-main", ""),
+			);
+
+		// Batch controls listeners
+		document
+			.getElementById("pasteBatchClipboardBtn")
+			?.addEventListener("click", () => {
+				const text = clipboard.readText();
+				const textarea = document.getElementById("batchUrlsInput");
+				if (textarea) textarea.value = text;
+			});
+		document
+			.getElementById("startBatchBtn")
+			?.addEventListener("click", () => this._startBatchDownloads());
+		document
+			.getElementById("stopBatchBtn")
+			?.addEventListener("click", () => this._stopBatchDownloads());
+		document
+			.getElementById("presetVideoBtn")
+			?.addEventListener("click", () =>
+				this._setBatchPresetType("video"),
+			);
+		document
+			.getElementById("presetAudioBtn")
+			?.addEventListener("click", () =>
+				this._setBatchPresetType("audio"),
+			);
+		document
+			.getElementById("presetQualitySelect")
+			?.addEventListener("change", (e) => {
+				this.state.batchPreset.quality = e.target.value;
+			});
+		document
+			.getElementById("presetFormatSelect")
+			?.addEventListener("change", (e) => {
+				this.state.batchPreset.format = e.target.value;
+			});
+
 		$(CONSTANTS.DOM_IDS.SEARCH_BTN)?.addEventListener("click", () => {
 			const query = $(CONSTANTS.DOM_IDS.SEARCH_INPUT).value.trim();
 			if (query) {
@@ -802,16 +1462,28 @@ class YtDownloaderApp {
 			},
 		);
 		document.addEventListener("keydown", (event) => {
-			if (
-				((event.ctrlKey && event.key === "v") ||
-					(event.metaKey &&
-						event.key === "v" &&
-						platform() === "darwin")) &&
-				document.activeElement.tagName !== "INPUT" &&
-				document.activeElement.tagName !== "TEXTAREA"
-			) {
+			const viewHome = document.getElementById("view-home");
+			if (!viewHome || viewHome.classList.contains("hidden")) return;
+
+			const isCtrlV =
+				(event.ctrlKey || (event.metaKey && platform() === "darwin")) &&
+				(event.key?.toLowerCase() === "v" || event.code === "KeyV");
+
+			const isInput =
+				document.activeElement &&
+				(document.activeElement.tagName === "INPUT" ||
+					document.activeElement.tagName === "TEXTAREA" ||
+					document.activeElement.isContentEditable);
+			
+			const isNotBatchView = this.state.mode === "single";
+
+			if (isCtrlV && !isInput && isNotBatchView) {
 				const pasteBtnInner = $(CONSTANTS.DOM_IDS.PASTE_URL_BTN);
+
+				if (pasteBtnInner && pasteBtnInner.disabled) return;
+
 				pasteBtnInner?.classList.add("active");
+
 				setTimeout(() => {
 					pasteBtnInner?.classList.remove("active");
 				}, 150);
@@ -821,35 +1493,36 @@ class YtDownloaderApp {
 		});
 
 		// Download buttons
-		$(CONSTANTS.DOM_IDS.VIDEO_DOWNLOAD_BTN).addEventListener("click", () =>
+		$(CONSTANTS.DOM_IDS.VIDEO_DOWNLOAD_BTN)?.addEventListener("click", () =>
 			this.handleDownloadRequest("video"),
 		);
-		$(CONSTANTS.DOM_IDS.AUDIO_DOWNLOAD_BTN).addEventListener("click", () =>
+		$(CONSTANTS.DOM_IDS.AUDIO_DOWNLOAD_BTN)?.addEventListener("click", () =>
 			this.handleDownloadRequest("audio"),
 		);
-		$(CONSTANTS.DOM_IDS.EXTRACT_BTN).addEventListener("click", () =>
+		$(CONSTANTS.DOM_IDS.EXTRACT_BTN)?.addEventListener("click", () =>
 			this.handleDownloadRequest("extract"),
 		);
 
 		// UI controls
-		$(CONSTANTS.DOM_IDS.CLOSE_HIDDEN_BTN).addEventListener("click", () =>
+		$(CONSTANTS.DOM_IDS.CLOSE_HIDDEN_BTN)?.addEventListener("click", () =>
 			this._hideInfoPanel(),
 		);
-		$(CONSTANTS.DOM_IDS.SELECT_LOCATION_BTN).addEventListener("click", () =>
-			ipcRenderer.send("select-location-main", ""),
+		$(CONSTANTS.DOM_IDS.SELECT_LOCATION_BTN)?.addEventListener(
+			"click",
+			() => ipcRenderer.send("select-location-main", ""),
 		);
-		$(CONSTANTS.DOM_IDS.CLEAR_BTN).addEventListener("click", () =>
+		$(CONSTANTS.DOM_IDS.CLEAR_BTN)?.addEventListener("click", () =>
 			this._clearAllDownloaded(),
 		);
 
 		// Error details
-		$(CONSTANTS.DOM_IDS.ERROR_DETAILS).addEventListener("click", (e) => {
+		$(CONSTANTS.DOM_IDS.ERROR_DETAILS)?.addEventListener("click", (e) => {
 			// @ts-ignore
 			clipboard.writeText(e.target.innerText);
 			this._showPopup(i18n.__("copiedText"), false);
 		});
 
-		$(CONSTANTS.DOM_IDS.QUIT_APP_BTN).addEventListener("click", () => {
+		$(CONSTANTS.DOM_IDS.QUIT_APP_BTN)?.addEventListener("click", () => {
 			ipcRenderer.send("quit", "quit");
 		});
 
@@ -860,56 +1533,14 @@ class YtDownloaderApp {
 				accessSync(downloadPath[0], constants.W_OK);
 
 				const newPath = downloadPath[0];
-				$(CONSTANTS.DOM_IDS.PATH_DISPLAY).textContent = newPath;
+				const pathEl = $(CONSTANTS.DOM_IDS.PATH_DISPLAY);
+				if (pathEl) pathEl.textContent = newPath;
 				this.state.downloadDir = newPath;
+				this._updateHomePathDisplay();
 			} catch (error) {
 				console.log(error);
 				this._showPopup(i18n.__("unableToAccessDir"), true);
 			}
-		});
-
-		ipcRenderer.on("download-progress", (_event, percent) => {
-			if (percent) {
-				const popup = $(CONSTANTS.DOM_IDS.UPDATE_POPUP);
-				const textEl = $(CONSTANTS.DOM_IDS.UPDATE_POPUP_PROGRESS);
-				const barEl = $(CONSTANTS.DOM_IDS.UPDATE_POPUP_BAR);
-
-				popup.style.display = "flex";
-				textEl.textContent = `${percent.toFixed(1)}%`;
-				barEl.style.width = `${percent}%`;
-			}
-		});
-
-		ipcRenderer.on("update-downloaded", (_event, _) => {
-			$(CONSTANTS.DOM_IDS.UPDATE_POPUP).style.display = "none";
-		});
-
-		// Menu Listeners
-		const menuMapping = {
-			[CONSTANTS.DOM_IDS.PREFERENCE_WIN]: "/preferences.html",
-			[CONSTANTS.DOM_IDS.ABOUT_WIN]: "/about.html",
-			[CONSTANTS.DOM_IDS.MOD_NOTES_WIN]: "/mod_notes.html",
-			[CONSTANTS.DOM_IDS.HISTORY_WIN]: "/history.html",
-		};
-		const windowMapping = {
-			[CONSTANTS.DOM_IDS.PLAYLIST_WIN]: "/playlist.html",
-			[CONSTANTS.DOM_IDS.COMPRESSOR_WIN]: "/compressor.html",
-			[CONSTANTS.DOM_IDS.SEARCH_WIN]: "/search.html",
-			[CONSTANTS.DOM_IDS.HOME_WIN]: "/index.html",
-		};
-
-		Object.entries(menuMapping).forEach(([id, page]) => {
-			$(id)?.addEventListener("click", () => {
-				this._closeMenu();
-				ipcRenderer.send("load-page", join(__dirname, page));
-			});
-		});
-
-		Object.entries(windowMapping).forEach(([id, page]) => {
-			$(id)?.addEventListener("click", () => {
-				this._closeMenu();
-				ipcRenderer.send("load-win", join(__dirname, page));
-			});
 		});
 
 		const minSlider = $(CONSTANTS.DOM_IDS.MIN_SLIDER);
@@ -944,18 +1575,20 @@ class YtDownloaderApp {
 		this._resetUIForNewLink();
 		$(CONSTANTS.DOM_IDS.SEARCH_RESULTS).innerHTML = "";
 
+		const searchLoading =
+			document.getElementById("loadingWrapperSearch") ||
+			$(CONSTANTS.DOM_IDS.LOADING_WRAPPER);
+		if (searchLoading) searchLoading.style.display = "flex";
+
 		try {
 			await this._loadSettings("https://youtube.com");
-			const {proxy, browserForCookies, configPath} =
-				this.state.preferences;
+			const {proxy} = this.state.preferences;
 			const args = [
 				"--flat-playlist",
 				"-j",
 				"--no-warnings",
 				...(proxy ? ["--proxy", proxy] : []),
-				...(browserForCookies
-					? ["--cookies-from-browser", browserForCookies]
-					: []),
+				...this._getCookieArgs(),
 				...(this.state.jsRuntimePath
 					? [
 							"--no-js-runtimes",
@@ -963,7 +1596,6 @@ class YtDownloaderApp {
 							this.state.jsRuntimePath,
 						]
 					: []),
-				...(configPath ? ["--config-location", configPath] : []),
 				"--",
 				`ytsearch12:${query}`,
 			];
@@ -973,11 +1605,12 @@ class YtDownloaderApp {
 				let stdout = "";
 				let stderr = "";
 
-				window.addEventListener("beforeunload", () => {
+				const onBeforeUnload = () => {
 					if (process && !process.killed) {
 						process.kill();
 					}
-				});
+				};
+				window.addEventListener("beforeunload", onBeforeUnload);
 
 				process.ytDlpProcess.stdout.on("data", (data) => {
 					stdout += data;
@@ -987,6 +1620,7 @@ class YtDownloaderApp {
 				});
 
 				process.on("close", () => {
+					window.removeEventListener("beforeunload", onBeforeUnload);
 					const items = [];
 					if (stdout) {
 						const lines = stdout.split(/\r?\n/);
@@ -1006,7 +1640,10 @@ class YtDownloaderApp {
 					resolve(items);
 				});
 
-				process.on("error", (err) => reject(err));
+				process.on("error", (err) => {
+					window.removeEventListener("beforeunload", onBeforeUnload);
+					reject(err);
+				});
 			});
 
 			this._renderSearchResults(results);
@@ -1014,7 +1651,10 @@ class YtDownloaderApp {
 			console.error("Search failed:", error);
 			$(CONSTANTS.DOM_IDS.INCORRECT_MSG).textContent = error.message;
 		} finally {
+			if (searchLoading) searchLoading.style.display = "none";
 			$(CONSTANTS.DOM_IDS.LOADING_WRAPPER).style.display = "none";
+			const pasteBtn = $(CONSTANTS.DOM_IDS.PASTE_URL_BTN);
+			if (pasteBtn) pasteBtn.disabled = false;
 		}
 	}
 
@@ -1043,6 +1683,9 @@ class YtDownloaderApp {
 			const card = document.createElement("div");
 			card.className = "searchResultItem";
 			card.addEventListener("click", () => {
+				if (window.switchView) {
+					window.switchView("view-home");
+				}
 				this.getInfo(item.url);
 			});
 
@@ -1096,6 +1739,9 @@ class YtDownloaderApp {
 	 * Pastes URL from clipboard and initiates fetching video info.
 	 */
 	pasteAndGetInfo() {
+		const pasteBtn = $(CONSTANTS.DOM_IDS.PASTE_URL_BTN);
+		if (pasteBtn && pasteBtn.disabled) return;
+		if (this.state.isFetchingInfo) return;
 		this.getInfo(clipboard.readText());
 	}
 
@@ -1104,12 +1750,22 @@ class YtDownloaderApp {
 	 * @param {string} url The video URL.
 	 */
 	async getInfo(url) {
+		const pasteBtn = $(CONSTANTS.DOM_IDS.PASTE_URL_BTN);
+		if (pasteBtn && pasteBtn.disabled) return;
+		if (this.state.isFetchingInfo) return;
+
+		this.state.isFetchingInfo = true;
+		if (pasteBtn) pasteBtn.disabled = true;
+
 		let safeUrl;
 		try {
 			safeUrl = this.validateUrl(url);
 		} catch {
-			$(CONSTANTS.DOM_IDS.ERROR_BTN).textContent = i18n.__("errorDetails") + " ◀";
+			$(CONSTANTS.DOM_IDS.ERROR_BTN).textContent =
+				i18n.__("errorDetails") + " ◀";
 			this._showError(i18n.__("invalidUrl"), url);
+			this.state.isFetchingInfo = false;
+			if (pasteBtn) pasteBtn.disabled = false;
 
 			return;
 		}
@@ -1124,8 +1780,16 @@ class YtDownloaderApp {
 			const metadata = await this._fetchVideoMetadata(safeUrl);
 			console.log(metadata);
 
+			const isLive = Boolean(
+				metadata.is_live ||
+				metadata.live_status === "is_live" ||
+				metadata.duration == null ||
+				metadata.duration === 0,
+			);
 			const durationInt =
-				metadata.duration == null ? null : Math.ceil(metadata.duration);
+				metadata.duration == null || metadata.duration <= 0
+					? null
+					: Math.ceil(metadata.duration);
 
 			this.state.videoInfo = {
 				...this.state.videoInfo,
@@ -1134,11 +1798,19 @@ class YtDownloaderApp {
 				channel: metadata.channel || "",
 				thumbnail: metadata.thumbnail,
 				duration: durationInt,
+				is_live: isLive,
 				extractor_key: metadata.extractor_key,
+				infoJsonPath: metadata._infoJsonPath || null,
+				infoJsonFetchedAt: metadata._infoJsonFetchedAt || null,
 			};
 			this.setVideoLength(durationInt);
 			this._populateFormatSelectors(metadata.formats || []);
-			this._displayInfoPanel();
+
+			if (this.state.mode === "single" && this.state.isAutoMode) {
+				this.handleDownloadRequest(this.state.batchPreset.type);
+			} else {
+				this._displayInfoPanel();
+			}
 		} catch (error) {
 			console.log(error);
 			if (
@@ -1150,7 +1822,9 @@ class YtDownloaderApp {
 				this._showError(error.message, url);
 			}
 		} finally {
+			this.state.isFetchingInfo = false;
 			$(CONSTANTS.DOM_IDS.LOADING_WRAPPER).style.display = "none";
+			if (pasteBtn) pasteBtn.disabled = false;
 		}
 	}
 
@@ -1160,25 +1834,66 @@ class YtDownloaderApp {
 	 */
 	handleDownloadRequest(type) {
 		this._updateDownloadOptionsFromUI();
+		this._hideInfoPanel(true);
+
+		const presetQuality = document.getElementById(
+			"presetQualitySelect",
+		)?.value;
+		const presetFormat =
+			document.getElementById("presetFormatSelect")?.value;
+		const videoFormatVal =
+			$(CONSTANTS.DOM_IDS.VIDEO_FORMAT_SELECT)?.value ||
+			(presetQuality ? presetQuality : "1080");
+		const audioFormatVal =
+			$(CONSTANTS.DOM_IDS.AUDIO_FORMAT_SELECT)?.value ||
+			presetFormat ||
+			"mp3";
+		const extractFormatVal =
+			$(CONSTANTS.DOM_IDS.EXTRACT_SELECTION)?.value ||
+			presetFormat ||
+			"mp3";
+
+		const isAuto = Boolean(
+			this.state.isAutoMode && this.state.mode === "single",
+		);
+		const isBatch = Boolean(this.state.mode === "multiple");
 
 		const downloadJob = {
-			type,
+			type: type || this.state.batchPreset.type,
 			url: this.state.videoInfo.url,
 			title: this.state.videoInfo.title,
 			channel: this.state.videoInfo.channel,
 			thumbnail: this.state.videoInfo.thumbnail,
+			duration: this.state.videoInfo.duration,
+			infoJsonPath: this.state.videoInfo.infoJsonPath,
+			infoJsonFetchedAt: this.state.videoInfo.infoJsonFetchedAt,
 			options: {...this.state.downloadOptions},
+			isAuto,
+			isBatch,
+			presetQuality:
+				presetQuality || this.state.batchPreset.quality || "1080",
+			presetFormat:
+				presetFormat ||
+				this.state.batchPreset.format ||
+				(type === "video" ? "mp4" : "mp3"),
 			// Capture UI values at the moment of click
 			uiSnapshot: {
-				videoFormat: $(CONSTANTS.DOM_IDS.VIDEO_FORMAT_SELECT).value,
-				audioForVideoFormat: $(
-					CONSTANTS.DOM_IDS.AUDIO_FOR_VIDEO_FORMAT_SELECT,
-				).value,
-				audioFormat: $(CONSTANTS.DOM_IDS.AUDIO_FORMAT_SELECT).value,
-				extractFormat: $(CONSTANTS.DOM_IDS.EXTRACT_SELECTION).value,
-				extractQuality: $(CONSTANTS.DOM_IDS.EXTRACT_QUALITY_SELECT)
-					.value,
+				videoFormat: videoFormatVal,
+				audioForVideoFormat:
+					$(CONSTANTS.DOM_IDS.AUDIO_FOR_VIDEO_FORMAT_SELECT)?.value ||
+					"best",
+				audioFormat: audioFormatVal,
+				extractFormat: extractFormatVal,
+				extractQuality:
+					$(CONSTANTS.DOM_IDS.EXTRACT_QUALITY_SELECT)?.value || "0",
+				outputFormat:
+					$(CONSTANTS.DOM_IDS.HOME_OUTPUT_FORMAT_SELECT)?.value ||
+					"auto",
 			},
+			customArgs:
+				$("customArgsInputHome")?.value?.trim() ||
+				$(CONSTANTS.DOM_IDS.CUSTOM_ARGS_INPUT)?.value?.trim() ||
+				"",
 		};
 
 		if (this.state.currentDownloads < this.state.maxActiveDownloads) {
@@ -1186,7 +1901,6 @@ class YtDownloaderApp {
 		} else {
 			this._queueDownload(downloadJob);
 		}
-		this._hideInfoPanel();
 	}
 
 	/**
@@ -1196,8 +1910,7 @@ class YtDownloaderApp {
 	 */
 	_fetchVideoMetadata(url) {
 		return new Promise((resolve, reject) => {
-			const {proxy, browserForCookies, configPath} =
-				this.state.preferences;
+			const {proxy} = this.state.preferences;
 			const args = [
 				"-j",
 				"--no-playlist",
@@ -1205,9 +1918,7 @@ class YtDownloaderApp {
 
 				...(proxy ? ["--proxy", proxy] : []),
 
-				...(browserForCookies
-					? ["--cookies-from-browser", browserForCookies]
-					: []),
+				...this._getCookieArgs(),
 
 				...(this.state.jsRuntimePath
 					? [
@@ -1217,19 +1928,18 @@ class YtDownloaderApp {
 						]
 					: []),
 
-				...(configPath ? ["--config-location", configPath] : []),
-
 				"--",
 				url,
 			];
 
 			const process = this.state.ytDlp.exec(args, {shell: false});
 
-			window.addEventListener("beforeunload", () => {
+			const onBeforeUnload = () => {
 				if (process && !process.killed) {
 					process.kill();
 				}
-			});
+			};
+			window.addEventListener("beforeunload", onBeforeUnload);
 
 			console.log(
 				"Spawned yt-dlp with args:",
@@ -1245,9 +1955,31 @@ class YtDownloaderApp {
 			process.ytDlpProcess.stderr.on("data", (data) => (stderr += data));
 
 			process.on("close", () => {
+				window.removeEventListener("beforeunload", onBeforeUnload);
 				if (stdout) {
 					try {
-						resolve(JSON.parse(stdout));
+						const metadata = JSON.parse(stdout);
+						const randomId =
+							"meta_" + Math.random().toString(36).substring(2, 10);
+						const safeId = (metadata.id || "video").replace(
+							/[^a-zA-Z0-9_-]/g,
+							"",
+						);
+						const infoJsonPath = join(
+							tmpdir(),
+							`ytdlp_info_${safeId}_${randomId}.info.json`,
+						);
+						try {
+							writeFileSync(infoJsonPath, stdout, "utf8");
+							metadata._infoJsonPath = infoJsonPath;
+							metadata._infoJsonFetchedAt = Date.now();
+						} catch (writeErr) {
+							console.warn(
+								"Failed to write temporary info.json:",
+								writeErr,
+							);
+						}
+						resolve(metadata);
 					} catch (e) {
 						reject(
 							new Error(
@@ -1265,35 +1997,90 @@ class YtDownloaderApp {
 				}
 			});
 
-			process.on("error", (err) => reject(err));
+			process.on("error", (err) => {
+				window.removeEventListener("beforeunload", onBeforeUnload);
+				reject(err);
+			});
 		});
 	}
 
 	/**
 	 * Starts the download process for a given job.
 	 * @param {object} job The download job object.
+	 * @param {string|null} existingId Optional existing ID if resuming a download.
 	 */
-	_startDownload(job) {
+	_startDownload(job, existingId = null) {
+		this._ensureJobCommand(job);
 		this.state.currentDownloads++;
-		const randomId = "item_" + Math.random().toString(36).substring(2, 12);
+		const randomId =
+			existingId || "item_" + Math.random().toString(36).substring(2, 12);
 
-		const {downloadArgs, tempFilePath} = this._prepareDownloadArgs(job);
+		if (!existingId) {
+			this._createDownloadUI(randomId, job);
+			this._updateEmptyStateUI();
+		} else {
+			const statusEl = $(`${randomId}_status`);
+			if (statusEl) {
+				statusEl.textContent = i18n.__("downloading") || "Downloading...";
+				statusEl.classList.remove("status-error");
+			}
+			const pauseBtn = $(`${randomId}_pause`);
+			if (pauseBtn) {
+				pauseBtn.title = i18n.__("pause") || "Pause";
+				pauseBtn.setAttribute("aria-label", "Pause download");
+				pauseBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>`;
+			}
+		}
 
-		this._createDownloadUI(randomId, job);
+		this.state.activeJobs.set(randomId, job);
+		this.state.pausedJobs.delete(randomId);
 
 		const controller = new AbortController();
+		controller.isBatch = !!job.isBatch;
 		this.state.downloadControllers.set(randomId, controller);
 
-		const downloadProcess = this.state.ytDlp.exec(downloadArgs, {
-			shell: false,
-			signal: controller.signal,
-		});
+		this._runDownloadProcess(randomId, job, controller);
+	}
 
-		window.addEventListener("beforeunload", () => {
+	/**
+	 * Executes the yt-dlp download process with automatic fallback to live URL if --load-info-json fails.
+	 * @param {string} randomId The unique identifier for the download UI item.
+	 * @param {object} job The download job configuration and snapshot.
+	 * @param {AbortController} controller Abort controller for cancelling the download process.
+	 */
+	_runDownloadProcess(randomId, job, controller) {
+		this._ensureJobCommand(job);
+		let downloadArgs = job.downloadArgs;
+		let tempFilePath = job.tempFilePath;
+
+		if (job._forceLiveUrl || !downloadArgs) {
+			const prep = this._prepareDownloadArgs(job);
+			downloadArgs = prep.downloadArgs;
+			tempFilePath = prep.tempFilePath;
+			job.downloadArgs = downloadArgs;
+			job.tempFilePath = tempFilePath;
+			job.command = this._formatYtDlpCommand(downloadArgs, job.url);
+		}
+
+		let didRetain = false;
+		if (job.usingInfoJson && !job._forceLiveUrl) {
+			this._retainInfoJson(job.infoJsonPath);
+			didRetain = true;
+		}
+
+		const downloadProcess = this.state.ytDlp.exec(
+			downloadArgs,
+			{shell: false},
+			controller.signal,
+		);
+		controller.downloadProcess = downloadProcess;
+
+		const onBeforeUnload = () => {
 			if (downloadProcess && !downloadProcess.killed) {
-				downloadProcess.kill();
+				this._killDownloadProcess(downloadProcess);
 			}
-		});
+		};
+		window.addEventListener("beforeunload", onBeforeUnload);
 
 		console.log(
 			"Spawned yt-dlp with args:",
@@ -1330,41 +2117,271 @@ class YtDownloaderApp {
 				this._updateProgressUI(randomId, progress);
 			})
 			.once("ytDlpEvent", () => {
-				const el = $(`${randomId}_prog`);
+				const el = $(`${randomId}_status`) || $(`${randomId}_prog`);
 				if (el) el.textContent = i18n.__("downloading");
 			})
 			.once("close", (code) => {
+				window.removeEventListener("beforeunload", onBeforeUnload);
 				if (existsSync(tempFilePath)) {
 					try {
-						const fileContent = require("fs")
-							.readFileSync(tempFilePath, "utf-8")
-							.trim();
+						const fileContent = readFileSync(
+							tempFilePath,
+							"utf-8",
+						).trim();
 						if (fileContent) {
 							actualFilePath = fileContent;
 						}
-						require("fs").unlinkSync(tempFilePath);
+						unlinkSync(tempFilePath);
 					} catch (e) {
 						console.error("Error reading temp file:", e);
 					}
 				}
 
+				if (controller.isPaused) {
+					if (didRetain) {
+						this._releaseInfoJson(job.infoJsonPath);
+					}
+					this._handleDownloadCompletion(
+						code,
+						randomId,
+						actualFilePath,
+						job,
+						controller,
+					);
+					return;
+				}
+
+				if (
+					code !== 0 &&
+					didRetain &&
+					!job._forceLiveUrl &&
+					!controller.signal.aborted
+				) {
+					console.warn(
+						`Download with --load-info-json failed (exit code ${code}). Retrying with live URL...`,
+					);
+					this._releaseInfoJson(job.infoJsonPath);
+					didRetain = false;
+					job._forceLiveUrl = true;
+					const el = $(`${randomId}_status`) || $(`${randomId}_prog`);
+					if (el) el.textContent = i18n.__("downloading");
+					this._runDownloadProcess(randomId, job, controller);
+					return;
+				}
+
+				if (didRetain) {
+					this._releaseInfoJson(job.infoJsonPath);
+					didRetain = false;
+				}
 				this._handleDownloadCompletion(
 					code,
 					randomId,
 					actualFilePath,
-					job.thumbnail,
+					job,
+					controller,
 				);
 			})
 			.once("error", (error) => {
+				window.removeEventListener("beforeunload", onBeforeUnload);
 				if (existsSync(tempFilePath)) {
 					try {
-						require("fs").unlinkSync(tempFilePath);
+						unlinkSync(tempFilePath);
 					} catch (e) {}
 				}
-				this.state.downloadedItems.add(randomId);
-				this._updateClearAllButton();
-				this._handleDownloadError(error, randomId);
+
+				if (controller.isPaused) {
+					if (didRetain) {
+						this._releaseInfoJson(job.infoJsonPath);
+					}
+					const wasActive =
+						this.state.downloadControllers.delete(randomId);
+					if (wasActive) {
+						this.state.currentDownloads = Math.max(
+							0,
+							this.state.currentDownloads - 1,
+						);
+						this._processQueue();
+					}
+					return;
+				}
+
+				if (
+					didRetain &&
+					!job._forceLiveUrl &&
+					!controller.signal.aborted
+				) {
+					console.warn(
+						"Download with --load-info-json encountered error. Retrying with live URL:",
+						error,
+					);
+					this._releaseInfoJson(job.infoJsonPath);
+					didRetain = false;
+					job._forceLiveUrl = true;
+					const el = $(`${randomId}_status`) || $(`${randomId}_prog`);
+					if (el) el.textContent = i18n.__("downloading");
+					this._runDownloadProcess(randomId, job, controller);
+					return;
+				}
+
+				if (didRetain) {
+					this._releaseInfoJson(job.infoJsonPath);
+					didRetain = false;
+				}
+				this._handleDownloadError(error, randomId, controller);
 			});
+	}
+
+	/**
+	 * Pauses an active download.
+	 * @param {string} randomId The ID of the download item.
+	 */
+	_pauseDownload(randomId) {
+		const controller = this.state.downloadControllers.get(randomId);
+		const job = this.state.activeJobs.get(randomId);
+		if (!job && !controller) return;
+
+		if (job) {
+			this.state.pausedJobs.set(randomId, job);
+			this.state.activeJobs.delete(randomId);
+		}
+
+		if (controller) {
+			controller.isPaused = true;
+			controller.abort();
+			if (controller.downloadProcess) {
+				this._killDownloadProcess(controller.downloadProcess);
+			}
+		}
+
+		const statusEl = $(`${randomId}_status`);
+		if (statusEl) {
+			statusEl.textContent = i18n.__("paused") || "Paused";
+			statusEl.classList.remove("status-error");
+		}
+		const speedEl = $(`${randomId}_speed`);
+		if (speedEl) speedEl.textContent = "";
+
+		const pauseBtn = $(`${randomId}_pause`);
+		if (pauseBtn) {
+			pauseBtn.title = i18n.__("resume") || "Resume";
+			pauseBtn.setAttribute("aria-label", "Resume download");
+			pauseBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="6,4 20,12 6,20"></polygon></svg>`;
+		}
+	}
+
+	/**
+	 * Resumes a paused download.
+	 * @param {string} randomId The ID of the download item.
+	 */
+	_resumeDownload(randomId) {
+		const job =
+			this.state.pausedJobs.get(randomId) ||
+			this.state.activeJobs.get(randomId);
+		if (!job) return;
+
+		// Bail if the paused process hasn't finished tearing down yet.
+		if (this.state.downloadControllers.has(randomId)) return;
+
+		this.state.pausedJobs.delete(randomId);
+
+		const pauseBtn = $(`${randomId}_pause`);
+		if (pauseBtn) {
+			pauseBtn.title = i18n.__("pause") || "Pause";
+			pauseBtn.setAttribute("aria-label", "Pause download");
+			pauseBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>`;
+		}
+
+		if (this.state.currentDownloads < this.state.maxActiveDownloads) {
+			this._startDownload(job, randomId);
+		} else {
+			const statusEl = $(`${randomId}_status`);
+			if (statusEl) {
+				statusEl.textContent = i18n.__("queued") || "Queued";
+			}
+			this.state.downloadQueue.push({...job, queueId: randomId});
+		}
+	}
+
+	/**
+	 * Toggles between pause and resume for a download item.
+	 * @param {string} randomId The ID of the download item.
+	 */
+	_togglePauseResume(randomId) {
+		// If currently queued from a resume, pause it back
+		const queuedIndex = this.state.downloadQueue.findIndex(
+			(j) => j.queueId === randomId,
+		);
+		if (queuedIndex !== -1) {
+			const [queuedJob] = this.state.downloadQueue.splice(queuedIndex, 1);
+			this.state.pausedJobs.set(randomId, queuedJob);
+			const statusEl = $(`${randomId}_status`);
+			if (statusEl) {
+				statusEl.textContent = i18n.__("paused") || "Paused";
+			}
+			const pauseBtn = $(`${randomId}_pause`);
+			if (pauseBtn) {
+				pauseBtn.title = i18n.__("resume") || "Resume";
+				pauseBtn.setAttribute("aria-label", "Resume download");
+				pauseBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="6,4 20,12 6,20"></polygon></svg>`;
+			}
+			return;
+		}
+
+		if (this.state.pausedJobs.has(randomId)) {
+			this._resumeDownload(randomId);
+		} else {
+			this._pauseDownload(randomId);
+		}
+	}
+
+	/**
+	 * Forcefully terminates a download process and all child processes across platforms.
+	 * @param {object} processWrapper The yt-dlp process wrapper or child process object.
+	 */
+	_killDownloadProcess(processWrapper) {
+		const proc = processWrapper?.ytDlpProcess || processWrapper;
+		const pid = proc?.pid;
+		if (!pid || proc.killed) return;
+
+		try {
+			if (platform() === "win32") {
+				execSync(`taskkill /pid ${pid} /T /F`);
+			} else {
+				try {
+					execSync(`pkill -9 -P ${pid}`);
+				} catch (e) {}
+				try {
+					execSync(`kill -9 ${pid}`);
+				} catch (e) {}
+				try {
+					proc.kill("SIGKILL");
+				} catch (e) {}
+			}
+		} catch (err) {
+			try {
+				proc.kill("SIGKILL");
+			} catch (e) {}
+		}
+	}
+
+	/**
+	 * Ensures that a job has its arguments and formatted command computed and frozen.
+	 * @param {object} job The download job object.
+	 * @returns {object} The job with downloadArgs, tempFilePath, and command populated.
+	 */
+	_ensureJobCommand(job) {
+		if (!job.command || !job.downloadArgs) {
+			try {
+				const {downloadArgs, tempFilePath} = this._prepareDownloadArgs(job);
+				job.downloadArgs = downloadArgs;
+				job.tempFilePath = tempFilePath;
+				job.command = this._formatYtDlpCommand(downloadArgs, job.url);
+			} catch (err) {
+				console.error("Error preparing job command:", err);
+				job.command = "yt-dlp " + (job.url ? `"${job.url}"` : "");
+			}
+		}
+		return job;
 	}
 
 	/**
@@ -1372,35 +2389,10 @@ class YtDownloaderApp {
 	 * @param {object} job The download job object.
 	 */
 	_queueDownload(job) {
+		this._ensureJobCommand(job);
 		const randomId = "queue_" + Math.random().toString(36).substring(2, 12);
 		this.state.downloadQueue.push({...job, queueId: randomId});
-		const itemHTML = `
-            <div class="item" id="${randomId}">
-                <div class="itemIconBox">
-                    <img src="${
-						job.thumbnail || "../assets/images/thumb.png"
-					}" alt="thumbnail" class="itemIcon" crossorigin="anonymous">
-                    <span class="itemType">${i18n.__(
-						job.type === "video" ? "video" : "audio",
-					)}</span>
-                </div>
-                <img src="../assets/images/close.png" class="itemClose" id="${randomId}_close">
-                <div class="itemBody">
-                    <div class="itemTitle">${job.title}</div>
-					<div class="itemChannel">${job.channel}</div>
-					<div class="speedContainer">
-						<span class="itemSpeed" id="${randomId}_speed"></span>
-					</div>
-                    <div id="${randomId}_prog" class="itemProgress">${i18n.__(
-						"preparing",
-					)}</div>
-					<button id="${randomId}_openBtn" class="openFileBtn"><img class="btnIcon" src="../assets/images/external-link.png"/>${i18n.__("openFile")}</button>
-                </div>
-            </div>`;
-		$(CONSTANTS.DOM_IDS.DOWNLOAD_LIST).insertAdjacentHTML(
-			"beforeend",
-			itemHTML,
-		);
+		this._createDownloadUI(randomId, job, true);
 	}
 
 	/**
@@ -1412,9 +2404,21 @@ class YtDownloaderApp {
 			this.state.currentDownloads < this.state.maxActiveDownloads
 		) {
 			const nextJob = this.state.downloadQueue.shift();
-			// Remove the pending UI element
-			$(nextJob.queueId)?.remove();
-			this._startDownload(nextJob);
+
+			if (nextJob.isBatch && this.state.isBatchCancelled) {
+				if (nextJob.queueId && nextJob.queueId.startsWith("queue_")) {
+					$(nextJob.queueId)?.remove();
+				}
+				this._processQueue();
+				return;
+			}
+
+			if (nextJob.queueId && nextJob.queueId.startsWith("queue_")) {
+				$(nextJob.queueId)?.remove();
+				this._startDownload(nextJob);
+			} else {
+				this._startDownload(nextJob, nextJob.queueId);
+			}
 		}
 	}
 
@@ -1424,68 +2428,22 @@ class YtDownloaderApp {
 	 * @returns {{downloadArgs: string[], tempFilePath: string}}
 	 */
 	_prepareDownloadArgs(job) {
-		const {type, url, title, options, uiSnapshot} = job;
-		const {rangeOption, rangeCmd, subs, subLangs} = options;
+		const type = job.type || "video";
+		const url = job.url || "";
+		const options = job.options || {};
+		const uiSnapshot = job.uiSnapshot || {};
+		const {rangeOption = "", rangeCmd = "", subs = "", subLangs = ""} = options;
 		const {
-			proxy,
+			proxy = "",
 			browserForCookies,
-			configPath,
-			videoOutputTemplate,
-			audioOutputTemplate,
-		} = this.state.preferences;
+			videoOutputTemplate = "%(title)s.%(ext)s",
+			audioOutputTemplate = "%(title)s.%(ext)s",
+			concurrentFragments = 1,
+		} = this.state.preferences || {};
 
 		let format_id, ext, audioForVideoFormat_id, audioFormat;
 
 		let template = videoOutputTemplate;
-
-		if (type === "video") {
-			const [videoFid, videoExt, _, videoCodec] =
-				uiSnapshot.videoFormat.split("|");
-			const [audioFid, audioExt] =
-				uiSnapshot.audioForVideoFormat.split("|");
-			format_id = videoFid;
-			audioForVideoFormat_id = audioFid;
-			const finalAudioExt = audioExt === "webm" ? "opus" : audioExt;
-			ext = videoExt;
-			if (videoExt === "mp4" && finalAudioExt === "opus") {
-				if (videoCodec.includes("avc")) ext = "mkv";
-				else if (videoCodec.includes("av01")) ext = "webm";
-			} else if (
-				videoExt === "webm" &&
-				["m4a", "mp4"].includes(finalAudioExt)
-			) {
-				ext = "mkv";
-			}
-			audioFormat =
-				audioForVideoFormat_id === "none"
-					? ""
-					: `+${audioForVideoFormat_id}`;
-		} else if (type === "audio") {
-			[format_id, ext] = uiSnapshot.audioFormat.split("|");
-			ext = ext === "webm" ? "opus" : ext;
-
-			template = audioOutputTemplate;
-		} else {
-			ext =
-				{alac: "m4a"}[uiSnapshot.extractFormat] ||
-				uiSnapshot.extractFormat;
-
-			template = audioOutputTemplate;
-		}
-
-		if (rangeCmd) {
-			let rangeTxt = rangeCmd.replace("*", "");
-			if (platform() === "win32") rangeTxt = rangeTxt.replace(/:/g, "_");
-
-			if (template.includes(".%(ext)s")) {
-				template = template.replace(
-					".%(ext)s",
-					` [${rangeTxt}].%(ext)s`,
-				);
-			} else {
-				template += ` [${rangeTxt}]`;
-			}
-		}
 
 		const outputArgs = ["-P", this.state.downloadDir, "-o", template];
 
@@ -1493,13 +2451,13 @@ class YtDownloaderApp {
 			"--no-playlist",
 			"--no-mtime",
 
-			...(browserForCookies
-				? ["--cookies-from-browser", browserForCookies]
+			...(concurrentFragments > 1
+				? ["--concurrent-fragments", String(concurrentFragments)]
 				: []),
 
-			...(proxy ? ["--proxy", proxy] : []),
+			...this._getCookieArgs(),
 
-			...(configPath ? ["--config-location", configPath] : []),
+			...(proxy ? ["--proxy", proxy] : []),
 
 			"--ffmpeg-location",
 			this.state.ffmpegPath,
@@ -1509,40 +2467,201 @@ class YtDownloaderApp {
 				: []),
 		];
 
-		if (type === "audio") {
-			if (ext === "m4a" || ext === "mp3" || ext === "mp4") {
-				baseArgs.unshift("--embed-thumbnail");
-			}
-		} else if (type === "extract") {
-			if (ext === "mp3" || ext === "m4a") {
-				baseArgs.unshift("--embed-thumbnail");
-			}
-		}
+		let downloadArgs = [];
 
-		let downloadArgs;
-		if (type === "extract") {
-			downloadArgs = [
-				"-x",
-				"--audio-format",
-				uiSnapshot.extractFormat,
-				"--audio-quality",
-				uiSnapshot.extractQuality,
-				...outputArgs,
-				...baseArgs,
-			];
+		if (job.isBatch || job.isAuto) {
+			const presetQuality =
+				job.presetQuality || uiSnapshot.videoFormat || "1080";
+			const presetFormat =
+				job.presetFormat ||
+				uiSnapshot.audioFormat ||
+				(type === "video" ? "mp4" : "mp3");
+			const isYouTube =
+				url &&
+				(url.includes("youtube.com/") || url.includes("youtu.be/"));
+			const canEmbedThumb = platform() !== "darwin";
+
+			if (type === "video") {
+				template = videoOutputTemplate;
+				let formatArgs = [];
+				if (presetFormat === "mp4") {
+					formatArgs = [
+						"-f",
+						`bestvideo[height<=${presetQuality}]+bestaudio[ext=m4a]/best[height<=${presetQuality}]/best`,
+						"--merge-output-format",
+						"mp4",
+						// TODO: Consider doing a smart selection between remux/recode in future
+						"--recode-video",
+						"mp4",
+					];
+				} else if (presetFormat === "webm") {
+					formatArgs = [
+						"-f",
+						`bestvideo[height<=${presetQuality}]+bestaudio[ext=webm]/best[height<=${presetQuality}]/best`,
+						"--merge-output-format",
+						"webm",
+						"--recode-video",
+						"webm",
+					];
+				} else {
+					formatArgs = [
+						"-f",
+						`bv*[height<=${presetQuality}]+ba/best[height<=${presetQuality}]/best`,
+						"--merge-output-format",
+						presetFormat || "mkv",
+					];
+				}
+
+				baseArgs.unshift("--embed-metadata");
+				if (presetFormat === "mp4" && isYouTube && canEmbedThumb) {
+					baseArgs.unshift("--embed-thumbnail");
+				}
+
+				const batchOutputArgs = [
+					"-P",
+					this.state.downloadDir,
+					"-o",
+					template,
+				];
+				downloadArgs = [...formatArgs, ...batchOutputArgs, ...baseArgs];
+			} else {
+				// Audio mode in batch
+				template = audioOutputTemplate;
+				const batchOutputArgs = [
+					"-P",
+					this.state.downloadDir,
+					"-o",
+					template,
+				];
+				baseArgs.unshift("--embed-metadata");
+				if (
+					(presetFormat === "mp3" ||
+						(presetFormat === "m4a" && isYouTube)) &&
+					canEmbedThumb
+				) {
+					baseArgs.unshift("--embed-thumbnail");
+				}
+
+				downloadArgs = [
+					"-x",
+					"--audio-format",
+					presetFormat,
+					"--audio-quality",
+					"0",
+					...batchOutputArgs,
+					...baseArgs,
+				];
+			}
 		} else {
-			const formatString =
-				type === "video" ? `${format_id}${audioFormat}` : format_id;
-			downloadArgs = ["-f", formatString, ...outputArgs, ...baseArgs];
+			if (type === "video") {
+				const [videoFid, videoExt, _, videoCodec, videoAudioFlag] =
+					uiSnapshot.videoFormat.split("|");
+				const [audioFid, audioExt] =
+					uiSnapshot.audioForVideoFormat.split("|");
+				format_id = videoFid;
+				audioForVideoFormat_id = audioFid;
+				const finalAudioExt = audioExt === "webm" ? "opus" : audioExt;
+				ext = videoExt;
+				if (videoExt === "mp4" && finalAudioExt === "opus") {
+					if (videoCodec?.includes("avc")) ext = "mkv";
+					else if (videoCodec?.includes("av01")) ext = "webm";
+				} else if (
+					videoExt === "webm" &&
+					["m4a", "mp4"].includes(finalAudioExt)
+				) {
+					ext = "mkv";
+				}
+				const hasIntegratedAudio = videoAudioFlag === "hasAudio";
+				audioFormat =
+					hasIntegratedAudio || audioForVideoFormat_id === "none"
+						? ""
+						: `+${audioForVideoFormat_id}`;
+			} else if (type === "audio") {
+				[format_id, ext] = uiSnapshot.audioFormat.split("|");
+				ext = ext === "webm" ? "opus" : ext;
+
+				template = audioOutputTemplate;
+			} else {
+				ext =
+					{alac: "m4a"}[uiSnapshot.extractFormat] ||
+					uiSnapshot.extractFormat;
+
+				template = audioOutputTemplate;
+			}
+
+			if (rangeCmd) {
+				let rangeTxt = rangeCmd.replace("*", "");
+				if (platform() === "win32")
+					rangeTxt = rangeTxt.replace(/:/g, "_");
+
+				if (template.includes(".%(ext)s")) {
+					template = template.replace(
+						".%(ext)s",
+						` [${rangeTxt}].%(ext)s`,
+					);
+				} else {
+					template += ` [${rangeTxt}]`;
+				}
+			}
+
+			const singleOutputArgs = [
+				"-P",
+				this.state.downloadDir,
+				"-o",
+				template,
+			];
+
+			if (type === "audio") {
+				if (ext === "m4a" || ext === "mp3" || ext === "mp4") {
+					baseArgs.unshift("--embed-thumbnail");
+				}
+			} else if (type === "extract") {
+				if (ext === "mp3" || ext === "m4a") {
+					baseArgs.unshift("--embed-thumbnail");
+				}
+			}
+
+			if (type === "extract") {
+				downloadArgs = [
+					"-x",
+					"--audio-format",
+					uiSnapshot.extractFormat,
+					"--audio-quality",
+					uiSnapshot.extractQuality,
+					...singleOutputArgs,
+					...baseArgs,
+				];
+			} else {
+				const formatString =
+					type === "video" ? `${format_id}${audioFormat}` : format_id;
+				downloadArgs = [
+					"-f",
+					formatString,
+					...singleOutputArgs,
+					...baseArgs,
+				];
+			}
 		}
 
-		if (subs) downloadArgs.push(subs);
-		if (subLangs) downloadArgs.push(subLangs);
+		if (type === "video") {
+			const targetFormat = uiSnapshot?.outputFormat;
+			if (targetFormat && targetFormat !== "auto") {
+				ext = targetFormat;
+				downloadArgs.push("--recode-video", targetFormat);
+				downloadArgs.push("--merge-output-format", targetFormat);
+			}
+		}
+
+		if (subs) downloadArgs.push(...subs.split(/\s+/));
+		if (subLangs) downloadArgs.push(...subLangs.split(/\s+/));
 		if (rangeOption) downloadArgs.push(rangeOption, rangeCmd);
 
-		const customArgsString = $(
-			CONSTANTS.DOM_IDS.CUSTOM_ARGS_INPUT,
-		).value.trim();
+		const customArgsString =
+			job.customArgs !== undefined
+				? job.customArgs
+				: $("customArgsInputHome")?.value?.trim() ||
+					$(CONSTANTS.DOM_IDS.CUSTOM_ARGS_INPUT)?.value?.trim() ||
+					"";
 		if (customArgsString) {
 			const customArgs = customArgsString.split(/\s+/);
 			downloadArgs.push(...customArgs);
@@ -1562,7 +2681,7 @@ class YtDownloaderApp {
 		);
 
 		// Create a unique temporary file path to capture the exact filename from yt-dlp
-		const tmpDir = require("os").tmpdir();
+		const tmpDir = tmpdir();
 		const tempFilePath = join(tmpDir, `ytdlp_path_${randomId}.txt`);
 
 		// Tell yt-dlp to output the absolute final file path directly to the temp file
@@ -1572,7 +2691,22 @@ class YtDownloaderApp {
 			tempFilePath,
 		);
 
-		downloadArgs.push(url);
+		const MAX_INFO_JSON_AGE_MS = 1 * 60 * 60 * 1000; // 1 hour
+		const hasValidInfoJson =
+			!job.isBatch &&
+			!job._forceLiveUrl &&
+			job.infoJsonPath &&
+			existsSync(job.infoJsonPath) &&
+			job.infoJsonFetchedAt &&
+			Date.now() - job.infoJsonFetchedAt < MAX_INFO_JSON_AGE_MS;
+
+		job.usingInfoJson = Boolean(hasValidInfoJson);
+
+		if (hasValidInfoJson) {
+			downloadArgs.push("--load-info-json", job.infoJsonPath);
+		} else {
+			downloadArgs.push(url);
+		}
 
 		return {downloadArgs, tempFilePath};
 	}
@@ -1580,24 +2714,47 @@ class YtDownloaderApp {
 	/**
 	 * Handles the completion of a download process.
 	 */
-	_handleDownloadCompletion(code, randomId, actualFilePath, thumbnail) {
-		this.state.currentDownloads--;
-		this.state.downloadControllers.delete(randomId);
+	_handleDownloadCompletion(code, randomId, actualFilePath, job, controller) {
+		const wasActive = this.state.downloadControllers.delete(randomId);
+		if (wasActive) {
+			this.state.currentDownloads = Math.max(
+				0,
+				this.state.currentDownloads - 1,
+			);
+		}
+
+		if (controller?.isPaused) {
+			if (wasActive) this._processQueue();
+			return;
+		}
+
+		if (controller?.signal?.aborted) {
+			this.state.activeJobs.delete(randomId);
+			this.state.pausedJobs.delete(randomId);
+			if (wasActive) this._processQueue();
+			return;
+		}
 
 		if (code === 0) {
-			this._showDownloadSuccessUI(randomId, actualFilePath, thumbnail);
+			this.state.activeJobs.delete(randomId);
+			this.state.pausedJobs.delete(randomId);
+			this._showDownloadSuccessUI(randomId, actualFilePath, job);
 			this.state.downloadedItems.add(randomId);
 			this._updateClearAllButton();
 		} else if (code !== null) {
 			this._handleDownloadError(
 				new Error(`Download process exited with code ${code}.`),
 				randomId,
+				controller,
 			);
+			return;
 		}
 
-		this._processQueue();
+		if (wasActive) {
+			this._processQueue();
+		}
 
-		if ($(CONSTANTS.DOM_IDS.QUIT_CHECKED).checked) {
+		if ($(CONSTANTS.DOM_IDS.QUIT_CHECKED)?.checked) {
 			ipcRenderer.send("quit", "quit");
 		}
 	}
@@ -1605,30 +2762,54 @@ class YtDownloaderApp {
 	/**
 	 * Handles an error during the download process.
 	 */
-	_handleDownloadError(error, randomId) {
-		if (
-			error.name === "AbortError" ||
-			error.message.includes("AbortError")
-		) {
-			console.log(`Download ${randomId} was aborted.`);
+	_handleDownloadError(error, randomId, controller = null) {
+		const wasActive = this.state.downloadControllers.delete(randomId);
+		if (wasActive) {
 			this.state.currentDownloads = Math.max(
 				0,
 				this.state.currentDownloads - 1,
 			);
-			this.state.downloadControllers.delete(randomId);
-			this._processQueue();
+		}
 
+		if (controller?.isPaused) {
+			if (wasActive) this._processQueue();
+			return;
+		}
+
+		if (
+			error.name === "AbortError" ||
+			error.message?.includes("AbortError") ||
+			controller?.signal?.aborted
+		) {
+			console.log(`Download ${randomId} was aborted.`);
+			this.state.activeJobs.delete(randomId);
+			this.state.pausedJobs.delete(randomId);
+			if (wasActive) {
+				this._processQueue();
+			}
 			return; // Don't treat user cancellation as an error
 		}
-		this.state.currentDownloads--;
-		this.state.downloadControllers.delete(randomId);
+
+		this.state.activeJobs.delete(randomId);
+		this.state.pausedJobs.delete(randomId);
+		$(`${randomId}_pause`)?.remove();
+
 		console.error("Download Error:", error);
-		const progressEl = $(`${randomId}_prog`);
-		if (progressEl) {
-			progressEl.textContent = i18n.__("errorHoverForDetails");
-			progressEl.title = error.message;
+		const statusEl = $(`${randomId}_status`) || $(`${randomId}_prog`);
+		const fillEl = $(`${randomId}_fill`);
+		const speedEl = $(`${randomId}_speed`);
+		if (statusEl) {
+			statusEl.textContent = i18n.__("errorHoverForDetails");
+			statusEl.title = error.message;
+			statusEl.classList.add("status-error");
 		}
-		this._processQueue();
+		if (speedEl) speedEl.textContent = "";
+		if (fillEl) fillEl.style.background = "var(--redBtn, #ef4444)";
+		this.state.downloadedItems.add(randomId);
+		this._updateClearAllButton();
+		if (wasActive) {
+			this._processQueue();
+		}
 	}
 
 	/**
@@ -1638,13 +2819,15 @@ class YtDownloaderApp {
 		const startTime = $(CONSTANTS.DOM_IDS.START_TIME).value;
 		const endTime = $(CONSTANTS.DOM_IDS.END_TIME).value;
 		const duration = this.state.videoInfo.duration;
+		const isLive = this.state.videoInfo.is_live;
 
 		const startSeconds = this.parseTime(startTime);
 		const endSeconds = this.parseTime(endTime);
 
 		if (
-			startSeconds === 0 &&
-			(endSeconds === duration || endSeconds === 0)
+			isLive ||
+			!duration ||
+			(startSeconds === 0 && (endSeconds === duration || endSeconds === 0))
 		) {
 			this.state.downloadOptions.rangeCmd = "";
 			this.state.downloadOptions.rangeOption = "";
@@ -1656,7 +2839,8 @@ class YtDownloaderApp {
 		}
 
 		if ($(CONSTANTS.DOM_IDS.SUB_CHECKED).checked) {
-			this.state.downloadOptions.subs = "--write-subs";
+			this.state.downloadOptions.subs =
+				"--write-subs --sub-format srt/best --convert-subs srt";
 			this.state.downloadOptions.subLangs = "--sub-langs all";
 		} else {
 			this.state.downloadOptions.subs = "";
@@ -1665,19 +2849,88 @@ class YtDownloaderApp {
 	}
 
 	/**
+	 * Increments the reference count for an active info.json temporary file.
+	 * Prevents premature deletion while in-flight downloads are using it.
+	 * @param {string} infoJsonPath The absolute path to the info.json file.
+	 */
+	_retainInfoJson(infoJsonPath) {
+		if (!infoJsonPath) return;
+		const current = this.state.activeInfoJsonPaths.get(infoJsonPath) || 0;
+		this.state.activeInfoJsonPaths.set(infoJsonPath, current + 1);
+	}
+
+	/**
+	 * Decrements the reference count for an active info.json temporary file.
+	 * Deletes the file if no active downloads reference it and it is not currently loaded in the UI.
+	 * @param {string} infoJsonPath The absolute path to the info.json file.
+	 */
+	_releaseInfoJson(infoJsonPath) {
+		if (!infoJsonPath) return;
+		const current = this.state.activeInfoJsonPaths.get(infoJsonPath) || 0;
+		if (current <= 1) {
+			this.state.activeInfoJsonPaths.delete(infoJsonPath);
+			if (this.state.videoInfo?.infoJsonPath !== infoJsonPath) {
+				try {
+					if (existsSync(infoJsonPath)) unlinkSync(infoJsonPath);
+				} catch (_) {}
+			}
+		} else {
+			this.state.activeInfoJsonPaths.set(infoJsonPath, current - 1);
+		}
+	}
+
+	/**
+	 * Sweeps and removes orphan temporary files (ytdlp_info_*.info.json and ytdlp_path_*.txt)
+	 * from the system temp directory on startup.
+	 */
+	_cleanupTempFiles() {
+		try {
+			const tmpDir = tmpdir();
+			const active = this.state.activeInfoJsonPaths;
+			const current = this.state.videoInfo?.infoJsonPath;
+			const files = readdirSync(tmpDir);
+			for (const file of files) {
+				if (
+					(file.startsWith("ytdlp_info_") &&
+						file.endsWith(".info.json")) ||
+					(file.startsWith("ytdlp_path_") && file.endsWith(".txt"))
+				) {
+					const full = join(tmpDir, file);
+					if (full === current || active?.has(full)) continue;
+					try {
+						unlinkSync(full);
+					} catch (_) {}
+				}
+			}
+		} catch (e) {
+			console.warn("Failed cleaning up temp files:", e);
+		}
+	}
+
+	/**
 	 * Resets the UI state for a new link.
 	 */
 	_resetUIForNewLink() {
+		if (this.state.videoInfo?.infoJsonPath) {
+			const oldPath = this.state.videoInfo.infoJsonPath;
+			this.state.videoInfo.infoJsonPath = null;
+			this.state.videoInfo.infoJsonFetchedAt = null;
+			if (!this.state.activeInfoJsonPaths.has(oldPath)) {
+				try {
+					if (existsSync(oldPath)) unlinkSync(oldPath);
+				} catch (_) {}
+			}
+		}
 		this._hideInfoPanel();
 		$(CONSTANTS.DOM_IDS.LOADING_WRAPPER).style.display = "flex";
-		$(CONSTANTS.DOM_IDS.INCORRECT_MSG).textContent = "";
-		$(CONSTANTS.DOM_IDS.ERROR_BTN).style.display = "none";
-		$(CONSTANTS.DOM_IDS.ERROR_DETAILS).style.display = "none";
+		this._clearError();
 		$(CONSTANTS.DOM_IDS.VIDEO_FORMAT_SELECT).innerHTML = "";
 		$(CONSTANTS.DOM_IDS.AUDIO_FORMAT_SELECT).innerHTML = "";
 		const noAudioTxt = i18n.__("noAudio");
 		$(CONSTANTS.DOM_IDS.AUDIO_FOR_VIDEO_FORMAT_SELECT).innerHTML =
 			`<option value="none|none">${noAudioTxt}</option>`;
+		const pasteBtn = $(CONSTANTS.DOM_IDS.PASTE_URL_BTN);
+		if (pasteBtn) pasteBtn.disabled = true;
 	}
 
 	/**
@@ -1692,6 +2945,15 @@ class YtDownloaderApp {
 
 		const {videoQuality, videoCodec, showMoreFormats} =
 			this.state.preferences;
+
+		const videoContainer = $(CONSTANTS.DOM_IDS.VIDEO_FORMAT_SELECT_CONTAINER);
+		if (videoContainer) {
+			videoContainer.classList.toggle(
+				"extended-format-select",
+				Boolean(showMoreFormats),
+			);
+		}
+
 		let bestMatchHeight = 0;
 
 		const speakerIconSvg = `<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>`;
@@ -1741,7 +3003,97 @@ class YtDownloaderApp {
 			? videoCodec
 			: [...availableCodecs].pop();
 
+		// Separate audio formats
+		const audioOnlyFormats = formats.filter(
+			(f) =>
+				formatHasAudio(f) &&
+				(f.vcodec === "none" || f.video_ext === "none"),
+		);
+
+		// Helper to score audio formats for ranking & selection
+		const scoreAudio = (format, preferredExt = "") => {
+			let score = 0;
+			const note = (format.format_note || "").toLowerCase();
+			const lang = (format.language || "").toLowerCase();
+			const ext = (format.ext === "webm" ? "opus" : format.ext || "").toLowerCase();
+
+			// 1. Original vs Dubbed Language Priority
+			const isOriginal =
+				note.includes("original") ||
+				note.includes("(default)") ||
+				lang === "orig" ||
+				lang === "default" ||
+				(typeof format.language_preference === "number" && format.language_preference > 0);
+			const isDubbed =
+				note.includes("dubbed") ||
+				(typeof format.language_preference === "number" && format.language_preference < 0);
+
+			if (isOriginal) {
+				score += 100000;
+			} else if (!isDubbed) {
+				score += 50000;
+			} else {
+				score += 0;
+			}
+
+			// 2. Audio Codec / Extension preference
+			if (preferredExt) {
+				const cleanPref = preferredExt.toLowerCase();
+				if (ext === cleanPref || (format.ext || "").toLowerCase() === cleanPref) {
+					score += 5000;
+				}
+			}
+
+			// 3. Audio Bitrate / Quality
+			const bitrate = format.abr || format.tbr || 0;
+			score += bitrate * 10;
+
+			if (note.includes("medium")) score += 300;
+			else if (note.includes("high")) score += 500;
+			else if (note.includes("low")) score += 100;
+			else if (note.includes("ultralow")) score += 50;
+
+			if (format.asr) {
+				score += Math.round(format.asr / 1000);
+			}
+
+			return score;
+		};
+
+		const prefAudioQuality =
+			localStorage.getItem("preferredAudioQuality") ||
+			localStorage.getItem("preferredAudioFormat") ||
+			"";
+		const standaloneAudioPref =
+			prefAudioQuality.toLowerCase().includes("opus") ||
+			prefAudioQuality.toLowerCase().includes("webm")
+				? "opus"
+				: "m4a";
+
+		let bestStandaloneAudio = null;
+		let bestStandaloneScore = -Infinity;
+		let bestAudioForVideo = null;
+		let bestVideoScore = -Infinity;
+
+		const videoIsWebm = finalCodec === "vp9" || finalCodec === "av01";
+		const videoAudioPref = videoIsWebm ? "opus" : "m4a";
+
+		audioOnlyFormats.forEach((f) => {
+			const sScore = scoreAudio(f, standaloneAudioPref);
+			if (sScore > bestStandaloneScore) {
+				bestStandaloneScore = sScore;
+				bestStandaloneAudio = f;
+			}
+
+			const vScore = scoreAudio(f, videoAudioPref);
+			if (vScore > bestVideoScore) {
+				bestVideoScore = vScore;
+				bestAudioForVideo = f;
+			}
+		});
+
 		let isAVideoSelected = false;
+		let selectedVideoHasAudio = false;
 
 		const videoOptions = [];
 		const audioOptions = [];
@@ -1773,6 +3125,7 @@ class YtDownloaderApp {
 				}
 
 				let isSelected = false;
+				const hasAudio = formatHasAudio(format);
 
 				if (
 					!isAVideoSelected &&
@@ -1781,16 +3134,19 @@ class YtDownloaderApp {
 				) {
 					isSelected = true;
 					isAVideoSelected = true;
+					selectedVideoHasAudio = hasAudio;
 				}
 
 				const quality = `${format.height || "???"}p${format.fps === 60 ? "60" : ""}`;
-				const vcodecText = format.vcodec?.split(".")[0] || "";
+				const vcodecText = formatVideoCodec(format.vcodec);
 
 				let audioMarkup = `<div class="audio-placeholder"></div>`;
-				if (format.acodec !== "none") {
+				if (hasAudio) {
 					const langName = getLanguageName(format.language);
-					const langSpan = langName ? `<span class="lang-text">${langName}</span>` : "";
-					
+					const langSpan = langName
+						? `<span class="lang-text">${langName}</span>`
+						: "";
+
 					if (langName) {
 						audioMarkup = `
 							<div class="audio-indicator">
@@ -1808,8 +3164,14 @@ class YtDownloaderApp {
 					}
 				}
 
+				const bitrateText = formatBitrate(format.vbr || format.tbr);
+
 				const codecHtml = showMoreFormats
 					? `<span class="codec-text">${vcodecText}</span>`
+					: "";
+
+				const bitrateHtml = showMoreFormats
+					? `<span class="bitrate-text">${bitrateText}</span>`
 					: "";
 
 				const gridClass = showMoreFormats
@@ -1817,7 +3179,9 @@ class YtDownloaderApp {
 					: "video-grid-compact";
 
 				const optionTextFallback = showMoreFormats
-					? `${quality} ${format.ext} ${vcodecText} ${displaySize}`
+					? `${quality} ${format.ext} ${vcodecText} ${bitrateText} ${displaySize}`
+							.replace(/\s+/g, " ")
+							.trim()
 					: `${quality} ${format.ext} ${displaySize}`;
 
 				const htmlContent = `
@@ -1825,6 +3189,7 @@ class YtDownloaderApp {
                     <span class="main-text">${quality}</span>
                     <span class="badge badge-format">${format.ext}</span>
                     ${codecHtml}
+                    ${bitrateHtml}
                     <span class="size-text">${displaySize}</span>
                     ${audioMarkup}
                 </div>
@@ -1832,21 +3197,27 @@ class YtDownloaderApp {
 
 				videoOptions.push({
 					text: optionTextFallback,
-					value: `${format.format_id}|${format.ext}|${format.height}|${format.vcodec}`,
+					value: `${format.format_id}|${format.ext}|${format.height}|${format.vcodec}|${hasAudio ? "hasAudio" : "noAudio"}`,
 					selected: isSelected,
 					html: htmlContent,
 				});
 
 				// PROCESS AUDIO ONLY CHANNELS
 			} else if (
-				format.acodec !== "none" &&
-				format.video_ext === "none"
+				formatHasAudio(format) &&
+				(format.vcodec === "none" || format.video_ext === "none")
 			) {
+				if (!showMoreFormats && format.ext === "webm") return;
+
 				const audioExt = format.ext === "webm" ? "opus" : format.ext;
 
-				const formatNote = i18n.__(
-					format.format_note || "unknownQuality",
-				);
+				const formatNote = format.format_note
+					? format.format_note
+					: i18n.__("unknownQuality");
+
+				const isStandaloneSelected =
+					bestStandaloneAudio &&
+					format.format_id === bestStandaloneAudio.format_id;
 
 				// HTML for Audio Grid
 				const htmlContent = `
@@ -1860,19 +3231,18 @@ class YtDownloaderApp {
 				audioOptions.push({
 					text: `${formatNote} ${audioExt} ${displaySize}`,
 					value: `${format.format_id}|${audioExt}`,
+					selected: Boolean(isStandaloneSelected),
 					html: htmlContent,
-					_ext: audioExt,
-					_size: sizeInMB,
 				});
 			}
 		});
 
 		const hasAudioTrack = formats.some(
 			(f) =>
-				f.acodec !== "none" &&
-				f.acodec !== undefined &&
-				f.vcodec === "none",
+				formatHasAudio(f) &&
+				(f.vcodec === "none" || f.video_ext === "none"),
 		);
+
 		const audioSection = $(CONSTANTS.DOM_IDS.AUDIO_PRESENT_SECTION);
 
 		if (audioSection) {
@@ -1884,24 +3254,6 @@ class YtDownloaderApp {
 		const audioForVideoSelectEl = $(
 			CONSTANTS.DOM_IDS.AUDIO_FOR_VIDEO_FORMAT_SELECT,
 		);
-
-		// Auto-select best audio: prefer opus > m4a > others, then largest size
-		if (audioOptions.length > 0) {
-			const audioPriority = {opus: 0, m4a: 1};
-			const ranked = audioOptions
-				.map((opt) => ({
-					opt,
-					priority:
-						audioPriority[opt._ext] !== undefined
-							? audioPriority[opt._ext]
-							: 2,
-					size: typeof opt._size === "number" ? opt._size : -1,
-				}))
-				.sort((a, b) => a.priority - b.priority || b.size - a.size);
-
-			audioOptions.forEach((opt) => delete opt.selected);
-			ranked[0].opt.selected = true;
-		}
 
 		const mountSlimSelect = (domElement, optionsData) => {
 			if (!domElement) return;
@@ -1941,19 +3293,24 @@ class YtDownloaderApp {
 
 		if (audioOptions.length > 0) {
 			mountSlimSelect(audioSelectEl, audioOptions);
-
-			mountSlimSelect(
-				audioForVideoSelectEl,
-				JSON.parse(JSON.stringify(audioOptions)),
-			);
 		}
 
-		const audioForVideoOptions = JSON.parse(JSON.stringify(audioOptions));
+		const audioForVideoOptions = audioOptions.map((opt) => {
+			const isMatch =
+				bestAudioForVideo &&
+				opt.value.startsWith(`${bestAudioForVideo.format_id}|`);
+			return {
+				...opt,
+				selected: !selectedVideoHasAudio && Boolean(isMatch),
+			};
+		});
+
 		const noAudioTxt = i18n.__("noAudio") || "No Audio";
 
 		audioForVideoOptions.push({
 			text: noAudioTxt,
 			value: "none|none",
+			selected: Boolean(selectedVideoHasAudio || !bestAudioForVideo),
 			html: `
         <div class="modern-option-row audio-grid">
             <span class="main-text">${noAudioTxt}</span>
@@ -1993,34 +3350,219 @@ class YtDownloaderApp {
 
 		const hiddenPanel = $(CONSTANTS.DOM_IDS.HIDDEN_PANEL);
 		hiddenPanel.style.display = "inline-block";
-		hiddenPanel.classList.add("scaleUp");
+		hiddenPanel.classList.remove("scaleUp", "scale", "fade-out");
+		hiddenPanel.classList.add("fade-in");
+		this._updateEmptyStateUI();
+	}
+
+	/**
+	 * Formats command arguments into a terminal/shell-friendly command string with proper quoting.
+	 * @param {string[]} args Command arguments
+	 * @param {string} [url] Source video URL
+	 * @returns {string}
+	 */
+	_formatYtDlpCommand(args = [], url = "") {
+		const bin = this.state.ytDlpPath || "yt-dlp";
+		const binFormatted = bin.includes(" ") ? `"${bin}"` : bin;
+
+		const cleanArgs = [];
+		for (let i = 0; i < args.length; i++) {
+			const arg = args[i];
+			if (arg === "--print-to-file") {
+				i += 2; // skip after_move:filepath and tempFilePath
+				continue;
+			}
+			if (arg === "--load-info-json") {
+				i += 1; // skip json path
+				if (url && !cleanArgs.includes(url)) cleanArgs.push(url);
+				continue;
+			}
+			cleanArgs.push(arg);
+		}
+
+		if (url && !cleanArgs.includes(url)) {
+			cleanArgs.push(url);
+		}
+
+		// Simple CLI flags like -f, -o, -P, -x, --no-playlist, --no-mtime don't need quotes
+		const isSafeFlag = /^--?[a-zA-Z0-9_-]+$/;
+
+		const formattedArgs = cleanArgs.map((arg) => {
+			if (typeof arg !== "string") return `"${String(arg)}"`;
+			if (isSafeFlag.test(arg)) {
+				return arg;
+			}
+			// Wrap URLs, paths, format strings, templates, and arguments in quotes for terminal compatibility
+			const escaped = arg.replace(/"/g, '\\"');
+			return `"${escaped}"`;
+		});
+
+		return [binFormatted, ...formattedArgs].join(" ");
+	}
+
+	/**
+	 * Shows a modal dialog displaying the full yt-dlp command with a one-click copy option.
+	 * @param {string} commandStr The formatted command string.
+	 */
+	_showCommandModal(commandStr) {
+		const existingModal = document.getElementById("cmdModalBackdrop");
+		if (existingModal) existingModal.remove();
+
+		const safeCmd = escapeHtml(commandStr || "yt-dlp");
+		const modalHTML = `
+            <div id="cmdModalBackdrop" class="cmd-modal-backdrop">
+                <div class="cmd-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="cmdModalTitle">
+                    <div class="cmd-modal-header">
+                        <div class="cmd-modal-title" id="cmdModalTitle">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="4 17 10 11 4 5"></polyline>
+                                <line x1="12" y1="19" x2="20" y2="19"></line>
+                            </svg>
+                            <span>yt-dlp Command</span>
+                        </div>
+                        <button class="cmd-modal-close" id="cmdModalCloseBtn" aria-label="Close" title="${i18n.__("close") || "Close"}">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="cmd-modal-body">
+                        <pre class="cmd-code-box" id="cmdCodeText"><code>${safeCmd}</code></pre>
+                    </div>
+                    <div class="cmd-modal-footer">
+                        <button class="cmd-modal-btn cmd-modal-btn-close" id="cmdModalCancelBtn" type="button">${i18n.__("close") || "Close"}</button>
+                        <button class="cmd-modal-btn cmd-modal-btn-copy" id="cmdModalCopyBtn" type="button">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            <span id="cmdModalCopyText">${i18n.__("clickToCopy") || "Copy Command"}</span>
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+
+		document.body.insertAdjacentHTML("beforeend", modalHTML);
+		const backdrop = document.getElementById("cmdModalBackdrop");
+
+		// Trigger entrance animation
+		requestAnimationFrame(() => {
+			backdrop?.classList.add("active");
+		});
+
+		const closeModal = () => {
+			backdrop?.classList.remove("active");
+			document.removeEventListener("keydown", onKeyDown);
+			setTimeout(() => backdrop?.remove(), 200);
+		};
+
+		const onKeyDown = (e) => {
+			if (e.key === "Escape") {
+				closeModal();
+			}
+		};
+		document.addEventListener("keydown", onKeyDown);
+
+		document.getElementById("cmdModalCloseBtn")?.addEventListener("click", closeModal);
+		document.getElementById("cmdModalCancelBtn")?.addEventListener("click", closeModal);
+		backdrop?.addEventListener("click", (e) => {
+			if (e.target === backdrop) closeModal();
+		});
+
+		document.getElementById("cmdModalCopyBtn")?.addEventListener("click", () => {
+			const clipApi = window.electronAPI?.clipboard || clipboard;
+			if (clipApi) {
+				clipApi.writeText(commandStr);
+				const copyTextEl = document.getElementById("cmdModalCopyText");
+				if (copyTextEl) copyTextEl.textContent = i18n.__("copiedText") || "Copied!";
+				this._showPopup(i18n.__("copiedText") || "Command copied to clipboard!");
+				setTimeout(() => {
+					if (copyTextEl) copyTextEl.textContent = i18n.__("clickToCopy") || "Copy Command";
+				}, 2000);
+			}
+		});
 	}
 
 	/**
 	 * Creates the initial UI element for a new download.
+	 * @param {string} randomId The unique ID of the download item element.
+	 * @param {object} job The download job data.
+	 * @param {boolean} [isQueued=false] Whether this item is initially queued.
 	 */
-	_createDownloadUI(randomId, job) {
+	_createDownloadUI(randomId, job, isQueued = false) {
+		const safeTitle = escapeHtml(job.title || "Video");
+		const safeChannel = escapeHtml(job.channel || "");
+		const isSafeUrl = this._isSafeWebUrl(job.url);
+		const initialStatus = isQueued
+			? (i18n.__("queued") || "Queued")
+			: (i18n.__("preparing") || "Preparing...");
+
 		const itemHTML = `
-            <div class="item" id="${randomId}">
+            <div class="item item-fade-in" id="${randomId}">
                 <div class="itemIconBox">
                     <img src="${
 						job.thumbnail || "../assets/images/thumb.png"
-					}" alt="thumbnail" class="itemIcon" crossorigin="anonymous">
+					}" alt="thumbnail" class="itemIcon" crossorigin="anonymous" onload="this.parentElement.classList.add('loaded')" onerror="this.onerror=null;this.src='../assets/images/thumb.png';this.parentElement.classList.add('loaded');">
+                    ${
+						this._isSafeWebUrl(job.thumbnail)
+							? `<button id="${randomId}_thumbOpen" class="openThumbBtn" title="${i18n.__(
+									"thumbnail",
+								) || "Thumbnail"}" aria-label="Open Thumbnail"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></button>`
+							: ""
+					}
                     <span class="itemType">${i18n.__(
 						job.type === "video" ? "video" : "audio",
 					)}</span>
                 </div>
-                <img src="../assets/images/close.png" class="itemClose" id="${randomId}_close">
+                <div class="itemTopActions">
+                    ${
+						!isQueued
+							? `<button class="itemPause" id="${randomId}_pause" title="${i18n.__(
+									"pause",
+								) || "Pause"}" aria-label="Pause download">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>
+                    </button>`
+							: ""
+					}
+                    <button class="itemClose" id="${randomId}_close" title="${i18n.__("cancel") || "Cancel"}" aria-label="Cancel download">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
                 <div class="itemBody">
-                    <div class="itemTitle">${job.title}</div>
-					<div class="itemChannel">${job.channel}</div>
-					<div class="speedContainer">
-						<span class="itemSpeed" id="${randomId}_speed"></span>
+                    <div class="itemTitle" id="${randomId}_title" title="${safeTitle}" ${isSafeUrl ? 'tabindex="0" role="link"' : ""}>${safeTitle}</div>
+					${safeChannel ? `<div class="itemChannel"><svg class="channelIcon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg><span>${safeChannel}</span></div>` : ""}
+					<div class="itemProgressSection" id="${randomId}_progressSection">
+						<div class="itemProgressMeta">
+							<span class="itemProgStatus" id="${randomId}_status">${initialStatus}</span>
+							<div class="itemMetaRight">
+								<span class="itemSpeed" id="${randomId}_speed"></span>
+								<button id="${randomId}_cmdMetaBtn" class="cmdMetaBtn" type="button" title="View yt-dlp Command" aria-label="View yt-dlp command">
+									<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<polyline points="4 17 10 11 4 5"></polyline>
+										<line x1="12" y1="19" x2="20" y2="19"></line>
+									</svg>
+								</button>
+							</div>
+						</div>
+						<div id="${randomId}_prog" class="custom-progress">
+							<div class="custom-progress-fill" id="${randomId}_fill" style="width: 0%;"></div>
+						</div>
 					</div>
-                    <div id="${randomId}_prog" class="itemProgress">${i18n.__(
-						"preparing",
-					)}</div>
-					<button id="${randomId}_openBtn" class="openFileBtn"><img class="btnIcon" src="../assets/images/external-link.png"/>${i18n.__("openFile")}</button>
+					<div class="itemActions" id="${randomId}_actions" style="display: none;">
+						<button id="${randomId}_openBtn" class="openFileBtn" type="button">
+							<svg class="btnIcon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+							</svg>
+							<span>${i18n.__("openFile") || "Open file"}</span>
+						</button>
+						<button id="${randomId}_cmdBtn" class="cmdActionBtn" type="button" title="View yt-dlp Command" aria-label="View yt-dlp command">
+							<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<polyline points="4 17 10 11 4 5"></polyline>
+								<line x1="12" y1="19" x2="20" y2="19"></line>
+							</svg>
+						</button>
+					</div>
                 </div>
             </div>`;
 		$(CONSTANTS.DOM_IDS.DOWNLOAD_LIST).insertAdjacentHTML(
@@ -2028,9 +3570,57 @@ class YtDownloaderApp {
 			itemHTML,
 		);
 
-		$(`${randomId}_close`).addEventListener("click", () =>
+		$(`${randomId}_close`)?.addEventListener("click", () =>
 			this._cancelDownload(randomId),
 		);
+
+		$(`${randomId}_pause`)?.addEventListener("click", () =>
+			this._togglePauseResume(randomId),
+		);
+
+		const handleShowCommand = () => {
+			this._ensureJobCommand(job);
+			this._showCommandModal(job.command || ("yt-dlp " + (job.url ? `"${job.url}"` : "")));
+		};
+
+		$(`${randomId}_cmdMetaBtn`)?.addEventListener("click", handleShowCommand);
+		$(`${randomId}_cmdBtn`)?.addEventListener("click", handleShowCommand);
+
+		if (isSafeUrl) {
+			const titleEl = $(`${randomId}_title`);
+			if (titleEl) {
+				const openTitleUrl = () => {
+					try {
+						const shellApi = window.electronAPI?.shell || shell;
+						shellApi.openExternal(job.url);
+					} catch (err) {
+						console.error("Error opening URL:", err);
+					}
+				};
+				titleEl.addEventListener("click", openTitleUrl);
+				titleEl.addEventListener("keydown", (e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						openTitleUrl();
+					}
+				});
+			}
+		}
+
+		if (this._isSafeWebUrl(job.thumbnail)) {
+			$(`${randomId}_thumbOpen`)?.addEventListener("click", (e) => {
+				e.stopPropagation();
+				try {
+					const u = new URL(job.thumbnail);
+					if (u.protocol === "http:" || u.protocol === "https:") {
+						const shellApi = window.electronAPI?.shell || shell;
+						shellApi.openExternal(job.thumbnail);
+					}
+				} catch (err) {
+					console.error("Invalid thumbnail URL:", err);
+				}
+			});
+		}
 	}
 
 	/**
@@ -2038,37 +3628,27 @@ class YtDownloaderApp {
 	 */
 	_updateProgressUI(randomId, progress) {
 		const speedEl = $(`${randomId}_speed`);
-		const progEl = $(`${randomId}_prog`);
-		if (!speedEl || !progEl) return;
-
-		let fillEl = progEl.querySelector(".custom-progress-fill");
-
-		if (!fillEl) {
-			progEl.innerHTML = "";
-
-			const bar = document.createElement("div");
-			bar.className = "custom-progress";
-
-			fillEl = document.createElement("div");
-			fillEl.className = "custom-progress-fill";
-
-			bar.appendChild(fillEl);
-			progEl.appendChild(bar);
-		}
+		const statusEl = $(`${randomId}_status`);
+		const fillEl = $(`${randomId}_fill`);
+		if (!fillEl) return;
 
 		if (progress.percent === 100) {
-			fillEl.style.width = progress.percent + "%";
-			speedEl.textContent = "";
-			progEl.textContent = i18n.__("processing");
+			fillEl.style.width = "100%";
+			if (speedEl) speedEl.textContent = "";
+			if (statusEl) statusEl.textContent = i18n.__("processing") || "Processing...";
 			ipcRenderer.send("progress", 0);
 
 			return;
 		}
 
-		speedEl.textContent = `${i18n.__("speed")}: ${
-			progress.currentSpeed || "0 B/s"
-		}`;
-		fillEl.style.width = progress.percent + "%";
+		const percentNum = typeof progress.percent === "number" ? Math.round(progress.percent) : 0;
+		if (statusEl) {
+			statusEl.textContent = `${i18n.__("downloading") || "Downloading..."} ${percentNum}%`;
+		}
+		if (speedEl) {
+			speedEl.textContent = progress.currentSpeed ? `${progress.currentSpeed}` : "";
+		}
+		fillEl.style.width = `${progress.percent}%`;
 
 		ipcRenderer.send("progress", progress.percent / 100);
 	}
@@ -2076,11 +3656,16 @@ class YtDownloaderApp {
 	/**
 	 * Updates a download item's UI to show it has completed successfully.
 	 */
-	_showDownloadSuccessUI(randomId, actualFilePath, thumbnail) {
-		const progressEl = $(`${randomId}_prog`);
+	_showDownloadSuccessUI(randomId, actualFilePath, job) {
+		const progressSection = $(`${randomId}_progressSection`);
+		const actionsEl = $(`${randomId}_actions`);
 		const openBtn = $(`${randomId}_openBtn`);
-
-		if (!progressEl) return;
+		const speedEl = $(`${randomId}_speed`);
+		const closeBtn = $(`${randomId}_close`);
+		const itemTitle = job?.title || this.state.videoInfo?.title;
+		const itemUrl = job?.url || this.state.videoInfo?.url;
+		const itemDuration = job?.duration ?? this.state.videoInfo?.duration;
+		const thumbnail = job?.thumbnail;
 
 		let fullPath;
 		if (actualFilePath) {
@@ -2105,14 +3690,11 @@ class YtDownloaderApp {
 		// If file doesn't exist at the expected path, attempt to find it with a loose matching strategy
 		if (
 			!existsSync(fullPath) &&
-			this.state.videoInfo &&
-			this.state.videoInfo.title
+			itemTitle
 		) {
 			try {
-				const originalTitle = this.state.videoInfo.title;
-				const dirFiles = require("fs").readdirSync(
-					this.state.downloadDir,
-				);
+				const originalTitle = itemTitle;
+				const dirFiles = readdirSync(this.state.downloadDir);
 				const looseTitle = originalTitle
 					.replace(/[^a-zA-Z0-9]/g, "")
 					.toLowerCase();
@@ -2145,17 +3727,24 @@ class YtDownloaderApp {
 
 		const ext = fullFilename.split(".").pop();
 
-		progressEl.innerHTML = ""; // Clear progress bar
+		if (progressSection) progressSection.style.display = "none";
+		if (speedEl) speedEl.textContent = "";
+		$(`${randomId}_pause`)?.remove();
+
+		if (actionsEl) {
+			actionsEl.style.display = "flex";
+		}
 
 		if (openBtn) {
-			openBtn.style.display = "flex";
+			openBtn.style.display = "inline-flex";
 			openBtn.onclick = () => {
 				ipcRenderer.send("show-file", fullPath);
 			};
 		}
 
-		progressEl.style.display = "none";
-		$(`${randomId}_speed`).textContent = "";
+		if (closeBtn) {
+			closeBtn.title = i18n.__("close") || "Dismiss";
+		}
 
 		// Send desktop notification
 		new Notification("ytDownloader", {
@@ -2172,14 +3761,14 @@ class YtDownloaderApp {
 				const fileSize = stat.size || 0;
 				ipcRenderer
 					.invoke("add-to-history", {
-						title: this.state.videoInfo.title,
-						url: this.state.videoInfo.url,
+						title: itemTitle,
+						url: itemUrl,
 						filename: baseFilename,
 						filePath: fullPath,
 						fileSize: fileSize,
 						format: ext,
 						thumbnail: thumbnail,
-						duration: this.state.videoInfo.duration,
+						duration: itemDuration,
 					})
 					.catch((err) =>
 						console.error("Error adding to history:", err),
@@ -2196,22 +3785,53 @@ class YtDownloaderApp {
 			i18n.__("errorNetworkOrUrl");
 		$(CONSTANTS.DOM_IDS.ERROR_BTN).style.display = "inline-block";
 		const errorDetails = $(CONSTANTS.DOM_IDS.ERROR_DETAILS);
-		errorDetails.innerHTML = `<strong>URL: ${url}</strong><br><br>${errorMessage}`;
+		errorDetails.textContent = "";
+		const strong = document.createElement("strong");
+		strong.textContent = `URL: ${url}`;
+		errorDetails.appendChild(strong);
+		errorDetails.appendChild(document.createElement("br"));
+		errorDetails.appendChild(document.createElement("br"));
+		errorDetails.appendChild(document.createTextNode(errorMessage));
 		errorDetails.title = i18n.__("clickToCopy");
+	}
+
+	/**
+	 * Clears error messages and hides error details in the main UI.
+	 */
+	_clearError() {
+		$(CONSTANTS.DOM_IDS.INCORRECT_MSG).textContent = "";
+		$(CONSTANTS.DOM_IDS.ERROR_BTN).style.display = "none";
+		const errorDetails = $(CONSTANTS.DOM_IDS.ERROR_DETAILS);
+		if (errorDetails) {
+			errorDetails.style.display = "none";
+			errorDetails.textContent = "";
+		}
 	}
 
 	/**
 	 * Hides the info panel with an animation.
 	 */
-	_hideInfoPanel() {
+	_hideInfoPanel(immediate = false) {
 		const panel = $(CONSTANTS.DOM_IDS.HIDDEN_PANEL);
-		if (panel.style.display !== "none") {
-			panel.classList.remove("scaleUp");
-			panel.classList.add("scale");
-			setTimeout(() => {
+		if (panel && panel.style.display !== "none") {
+			if (immediate) {
 				panel.style.display = "none";
-				panel.classList.remove("scale");
-			}, 400);
+				panel.classList.remove(
+					"fade-in",
+					"fade-out",
+					"scaleUp",
+					"scale",
+				);
+				this._updateEmptyStateUI();
+			} else {
+				panel.classList.remove("fade-in");
+				panel.classList.add("fade-out");
+				setTimeout(() => {
+					panel.style.display = "none";
+					panel.classList.remove("fade-out", "scaleUp", "scale");
+					this._updateEmptyStateUI();
+				}, 150);
+			}
 		}
 	}
 
@@ -2219,36 +3839,7 @@ class YtDownloaderApp {
 	 * Displays a temporary popup message.
 	 */
 	_showPopup(text, isError = false) {
-		let popupContainer = document.getElementById("popupContainer");
-
-		if (!popupContainer) {
-			popupContainer = document.createElement("div");
-			popupContainer.id = "popupContainer";
-			popupContainer.className = "popup-container";
-			document.body.appendChild(popupContainer);
-		}
-
-		const popup = document.createElement("span");
-		popup.textContent = text;
-		popup.classList.add("popup-item");
-
-		popup.style.background = isError ? "#ff6b6b" : "#54abde";
-
-		if (isError) {
-			popup.classList.add("popup-error");
-		}
-
-		popupContainer.appendChild(popup);
-
-		setTimeout(() => {
-			popup.style.opacity = "0";
-			setTimeout(() => {
-				popup.remove();
-				if (popupContainer.childElementCount === 0) {
-					popupContainer.remove();
-				}
-			}, 1000);
-		}, 2200);
+		showPopup(text, isError);
 	}
 
 	/**
@@ -2270,8 +3861,15 @@ class YtDownloaderApp {
 	_cancelDownload(id) {
 		// If it's an active download
 		if (this.state.downloadControllers.has(id)) {
-			this.state.downloadControllers.get(id).abort();
+			const controller = this.state.downloadControllers.get(id);
+			controller.abort();
+			if (controller?.downloadProcess) {
+				this._killDownloadProcess(controller.downloadProcess);
+			}
 		}
+		this.state.activeJobs.delete(id);
+		this.state.pausedJobs.delete(id);
+
 		// If it's in the queue
 		this.state.downloadQueue = this.state.downloadQueue.filter(
 			(job) => job.queueId !== id,
@@ -2290,8 +3888,12 @@ class YtDownloaderApp {
 	_fadeAndRemoveItem(id) {
 		const item = $(id);
 		if (item) {
-			item.classList.add("scale");
-			setTimeout(() => item.remove(), 500);
+			item.classList.remove("item-fade-in", "scale");
+			item.classList.add("item-fade-out");
+			setTimeout(() => {
+				item.remove();
+				this._updateEmptyStateUI();
+			}, 160);
 		}
 	}
 
@@ -2309,8 +3911,9 @@ class YtDownloaderApp {
 	 */
 	_updateClearAllButton() {
 		const btn = $(CONSTANTS.DOM_IDS.CLEAR_BTN);
+		if (!btn) return;
 		btn.style.display =
-			this.state.downloadedItems.size > 1 ? "inline-block" : "none";
+			this.state.downloadedItems.size > 0 ? "inline-flex" : "none";
 	}
 
 	/**
@@ -2367,24 +3970,7 @@ class YtDownloaderApp {
 	}
 
 	_formatTime(duration) {
-		if (duration === null) {
-			return "";
-		}
-
-		const hrs = Math.floor(duration / 3600);
-		const mins = Math.floor((duration % 3600) / 60);
-		const secs = Math.floor(duration % 60);
-
-		const paddedMins = String(mins).padStart(2, "0");
-		const paddedSecs = String(secs).padStart(2, "0");
-
-		if (hrs > 0) {
-			// H:MM:SS format
-			return `${hrs}:${paddedMins}:${paddedSecs}`;
-		} else {
-			// MM:SS format
-			return `${paddedMins}:${paddedSecs}`;
-		}
+		return formatTime(duration);
 	}
 
 	/**
@@ -2419,8 +4005,10 @@ class YtDownloaderApp {
 		minTimeDisplay.value = this._formatTime(minValue);
 		maxTimeDisplay.value = this._formatTime(maxValue);
 
-		const minPercent = ((minValue - minSliderVal) / sliderRange) * 100;
-		const maxPercent = ((maxValue - minSliderVal) / sliderRange) * 100;
+		const minPercent =
+			sliderRange > 0 ? ((minValue - minSliderVal) / sliderRange) * 100 : 0;
+		const maxPercent =
+			sliderRange > 0 ? ((maxValue - minSliderVal) / sliderRange) * 100 : 0;
 
 		rangeHighlight.style.left = `${minPercent}%`;
 		rangeHighlight.style.width = `${maxPercent - minPercent}%`;
@@ -2443,7 +4031,7 @@ class YtDownloaderApp {
 		}
 
 		const minSliderVal = parseInt(minSlider.min);
-		const maxSliderVal = parseInt(minSlider.max);
+		const maxSliderVal = parseInt(maxSlider.max);
 		newSeconds = Math.max(minSliderVal, Math.min(maxSliderVal, newSeconds));
 
 		if (input.id === "min-time") {
@@ -2474,20 +4062,37 @@ class YtDownloaderApp {
 	setVideoLength(duration) {
 		const minSlider = $(CONSTANTS.DOM_IDS.MIN_SLIDER);
 		const maxSlider = $(CONSTANTS.DOM_IDS.MAX_SLIDER);
+		const minTimeInput = $(CONSTANTS.DOM_IDS.START_TIME);
+		const maxTimeInput = $(CONSTANTS.DOM_IDS.END_TIME);
 
 		if (typeof duration !== "number" || duration < 1) {
-			console.error(
-				"Invalid duration provided to setVideoLength. Must be a number greater than 0.",
-			);
+			if (minSlider) {
+				minSlider.max = 0;
+				minSlider.value = 0;
+				minSlider.disabled = true;
+			}
+			if (maxSlider) {
+				maxSlider.max = 0;
+				maxSlider.value = 0;
+				maxSlider.disabled = true;
+			}
+			if (minTimeInput) {
+				minTimeInput.value = "00:00";
+				minTimeInput.disabled = true;
+			}
+			if (maxTimeInput) {
+				maxTimeInput.value = "00:00";
+				maxTimeInput.disabled = true;
+			}
 
-			minSlider.max = 0;
-			maxSlider.max = 0;
-
-			minSlider.value = 0;
-			maxSlider.value = 0;
-
+			this._updateSliderUI(null);
 			return;
 		}
+
+		if (minSlider) minSlider.disabled = false;
+		if (maxSlider) maxSlider.disabled = false;
+		if (minTimeInput) minTimeInput.disabled = false;
+		if (maxTimeInput) maxTimeInput.disabled = false;
 
 		minSlider.max = duration;
 		maxSlider.max = duration;
@@ -2502,11 +4107,379 @@ class YtDownloaderApp {
 	}
 
 	/**
+	 * Checks if a given URL is a valid http or https URL.
+	 * @param {string} rawUrl - The URL to check.
+	 * @returns {boolean}
+	 */
+	_isSafeWebUrl(rawUrl) {
+		if (!rawUrl) return false;
+		try {
+			const u = new URL(rawUrl);
+			return u.protocol === "http:" || u.protocol === "https:";
+		} catch {
+			return false;
+		}
+	}
+
+	/**
 	 * Validates a URL and returns the sanitized version.
 	 * @param {string} rawUrl - The URL to validate.
 	 * @returns {string} - The sanitized URL.
 	 * @throws {Error} - If the URL is invalid.
 	 */
+	/**
+	 * Updates the path display pill on homepage header.
+	 */
+	_updateHomePathDisplay() {
+		const displayEl = document.getElementById("homePathDisplay");
+		if (displayEl) {
+			displayEl.textContent =
+				this.state.downloadDir || "Select location...";
+		}
+	}
+
+	/**
+	 * Shows or hides the 'No downloads yet' empty state component.
+	 */
+	_updateEmptyStateUI() {
+		const emptyCard = document.getElementById("emptyStateHome");
+		const hiddenPanel = $(CONSTANTS.DOM_IDS.HIDDEN_PANEL);
+		const hiddenPanelVisible =
+			hiddenPanel && hiddenPanel.style.display !== "none";
+		const downloadList = $(CONSTANTS.DOM_IDS.DOWNLOAD_LIST);
+		const hasDownloadsInList =
+			downloadList && downloadList.children.length > 0;
+
+		if (emptyCard) {
+			if (
+				hiddenPanelVisible ||
+				hasDownloadsInList ||
+				this.state.isBatchRunning
+			) {
+				emptyCard.style.display = "none";
+			} else {
+				emptyCard.style.display = "flex";
+			}
+		}
+	}
+
+	/**
+	 * Switches homepage download mode ('single' vs 'multiple').
+	 * @param {'single' | 'multiple'} mode
+	 */
+	_switchHomeMode(mode) {
+		this.state.mode = mode;
+		const singleBtn = document.getElementById("modeSingleBtn");
+		const multipleBtn = document.getElementById("modeMultipleBtn");
+		const singleSec = document.getElementById("singleModeSection");
+		const multipleSec = document.getElementById("multipleModeSection");
+		const pathPicker = document.getElementById("homePathPicker");
+		const hiddenPanel = $(CONSTANTS.DOM_IDS.HIDDEN_PANEL);
+
+		if (mode === "single") {
+			singleBtn?.classList.add("active");
+			multipleBtn?.classList.remove("active");
+			if (singleSec) singleSec.style.display = "block";
+			if (multipleSec) multipleSec.style.display = "none";
+			if (pathPicker) pathPicker.style.display = "inline-flex";
+		} else {
+			multipleBtn?.classList.add("active");
+			singleBtn?.classList.remove("active");
+			if (singleSec) singleSec.style.display = "none";
+			if (multipleSec) multipleSec.style.display = "block";
+			if (pathPicker) pathPicker.style.display = "inline-flex";
+			if (hiddenPanel) hiddenPanel.style.display = "none";
+		}
+		this._clearError();
+		this._updateAutoModeUI();
+		this._updateEmptyStateUI();
+	}
+
+	/**
+	 * Updates the Auto Mode button and Quick Preset Bar visibility on the homepage.
+	 */
+	_updateAutoModeUI() {
+		const autoBtn = document.getElementById("autoDownloadToggleBtn");
+		const presetBar = document.getElementById("quickPresetBar");
+		if (autoBtn) {
+			autoBtn.classList.toggle("active", Boolean(this.state.isAutoMode));
+		}
+		if (presetBar) {
+			if (
+				this.state.mode === "multiple" ||
+				(this.state.mode === "single" && this.state.isAutoMode)
+			) {
+				presetBar.style.display = "flex";
+			} else {
+				presetBar.style.display = "none";
+			}
+		}
+	}
+
+	/**
+	 * Syncs quick preset bar (quality & format) with saved user preferences.
+	 */
+	_syncPresetDefaultsFromPreferences() {
+		const videoQuality =
+			localStorage.getItem(
+				CONSTANTS.LOCAL_STORAGE_KEYS.PREFERRED_VIDEO_QUALITY,
+			) ||
+			localStorage.getItem("preferredVideoQuality") ||
+			"1080";
+		const audioQuality =
+			localStorage.getItem(
+				CONSTANTS.LOCAL_STORAGE_KEYS.PREFERRED_AUDIO_QUALITY,
+			) ||
+			localStorage.getItem("preferredAudioQuality") ||
+			localStorage.getItem("preferredAudioFormat") ||
+			"mp3";
+
+		const qualitySelect = document.getElementById("presetQualitySelect");
+		if (qualitySelect && videoQuality) {
+			const matchingOpt = Array.from(qualitySelect.options).find(
+				(opt) => opt.value === String(videoQuality),
+			);
+			if (matchingOpt) {
+				qualitySelect.value = String(videoQuality);
+				this.state.batchPreset.quality = String(videoQuality);
+			}
+		}
+
+		if (this.state.batchPreset.type === "audio") {
+			this._setBatchPresetType("audio");
+		} else {
+			this._setBatchPresetType("video");
+		}
+	}
+
+	/**
+	 * Toggles batch preset mode ('video' vs 'audio').
+	 * @param {'video' | 'audio'} type
+	 */
+	_setBatchPresetType(type) {
+		this.state.batchPreset.type = type;
+		const videoBtn = document.getElementById("presetVideoBtn");
+		const audioBtn = document.getElementById("presetAudioBtn");
+		const qualityContainer = document.getElementById(
+			"presetQualityContainer",
+		);
+		const formatSelect = document.getElementById("presetFormatSelect");
+
+		if (type === "video") {
+			videoBtn?.classList.add("active");
+			audioBtn?.classList.remove("active");
+			if (qualityContainer) qualityContainer.style.display = "flex";
+			if (formatSelect) {
+				formatSelect.innerHTML = `
+					<option value="mp4">MP4</option>
+					<option value="mkv">MKV</option>
+					<option value="webm">WEBM</option>
+				`;
+				this.state.batchPreset.format = "mp4";
+			}
+		} else {
+			audioBtn?.classList.add("active");
+			videoBtn?.classList.remove("active");
+			if (qualityContainer) qualityContainer.style.display = "none";
+			if (formatSelect) {
+				formatSelect.innerHTML = `
+					<option value="mp3">MP3</option>
+					<option value="m4a">M4A</option>
+					<option value="opus">OPUS</option>
+					<option value="flac">FLAC</option>
+					<option value="wav">WAV</option>
+				`;
+				const prefAudio =
+					localStorage.getItem("preferredAudioQuality") ||
+					localStorage.getItem("preferredAudioFormat") ||
+					"mp3";
+				const validAudio = [
+					"mp3",
+					"m4a",
+					"opus",
+					"flac",
+					"wav",
+				].includes(prefAudio.toLowerCase())
+					? prefAudio.toLowerCase()
+					: "mp3";
+				formatSelect.value = validAudio;
+				this.state.batchPreset.format = validAudio;
+			}
+		}
+	}
+
+	/**
+	 * Parses input string to extract valid URLs.
+	 * @param {string} text
+	 * @returns {string[]}
+	 */
+	_extractUrlsFromString(text) {
+		if (!text) return [];
+		const lines = text.split(/\r?\n|\s+/);
+		const urls = [];
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			try {
+				const u = new URL(trimmed);
+				if (u.protocol === "http:" || u.protocol === "https:") {
+					urls.push(u.toString());
+				}
+			} catch (_) {}
+		}
+		return [...new Set(urls)];
+	}
+
+	/**
+	 * Executes batch downloads one by one from textarea or clipboard text.
+	 */
+	async _startBatchDownloads() {
+		if (this.state.isBatchRunning) return;
+
+		this._clearError();
+
+		const textarea = document.getElementById("batchUrlsInput");
+		const text = textarea ? textarea.value : "";
+		const urls = this._extractUrlsFromString(text);
+
+		if (urls.length === 0) {
+			this._showPopup(
+				i18n.__("invalidUrl") || "No valid URLs found",
+				true,
+			);
+			return;
+		}
+
+		this.state.isBatchRunning = true;
+		this.state.isBatchCancelled = false;
+
+		const startBtn = document.getElementById("startBatchBtn");
+		const stopBtn = document.getElementById("stopBatchBtn");
+
+		if (startBtn) startBtn.style.display = "none";
+		if (stopBtn) stopBtn.style.display = "inline-flex";
+		if (textarea) textarea.disabled = true;
+
+		await this._loadSettings("https://youtube.com", false);
+
+		try {
+			for (const url of urls) {
+				if (this.state.isBatchCancelled) {
+					console.log("Batch process cancelled by user.");
+					break;
+				}
+
+				let title = url;
+				let thumbnail = "";
+				let channel = "";
+				let duration = null;
+
+				try {
+					const meta = await this._fetchVideoMetadata(url);
+					if (meta && meta.title) title = meta.title;
+					if (meta && meta.thumbnail) thumbnail = meta.thumbnail;
+					if (meta && meta.channel) channel = meta.channel;
+					if (meta?.duration && meta.duration > 0)
+						duration = Math.ceil(meta.duration);
+				} catch (e) {
+					console.warn(
+						"Failed fetching meta for batch item:",
+						url,
+						e,
+					);
+				}
+
+				if (this.state.isBatchCancelled) break;
+
+				const preset = this.state.batchPreset;
+				const downloadJob = {
+					type: preset.type,
+					url: url,
+					title: title,
+					channel: channel,
+					thumbnail: thumbnail,
+					duration: duration,
+					isBatch: true,
+					options: {
+						rangeCmd: "",
+						rangeOption: "",
+						subs: "",
+						subLangs: "",
+					},
+					uiSnapshot: {
+						videoFormat: preset.quality,
+						audioForVideoFormat: "best",
+						audioFormat: preset.format,
+						extractFormat: preset.format,
+						extractQuality: "0",
+					},
+					customArgs:
+						$("customArgsInputHome")?.value?.trim() ||
+						$(CONSTANTS.DOM_IDS.CUSTOM_ARGS_INPUT)?.value?.trim() ||
+						"",
+				};
+
+				if (
+					this.state.currentDownloads < this.state.maxActiveDownloads
+				) {
+					this._startDownload(downloadJob);
+				} else {
+					this._queueDownload(downloadJob);
+				}
+
+				await new Promise((resolve) => setTimeout(resolve, 300));
+			}
+		} catch (err) {
+			console.error("Batch download error:", err);
+		} finally {
+			this.state.isBatchRunning = false;
+			if (startBtn) startBtn.style.display = "inline-flex";
+			if (stopBtn) stopBtn.style.display = "none";
+			if (textarea) {
+				textarea.disabled = false;
+				if (!this.state.isBatchCancelled) {
+					textarea.value = "";
+				}
+			}
+			this._updateEmptyStateUI();
+		}
+	}
+
+	/**
+	 * Stops the active batch download process.
+	 */
+	_stopBatchDownloads() {
+		this.state.isBatchCancelled = true;
+		this.state.isBatchRunning = false;
+
+		this.state.downloadControllers.forEach((controller) => {
+			if (controller.isBatch) {
+				try {
+					controller.abort();
+				} catch (e) {}
+			}
+		});
+
+		this.state.downloadQueue = this.state.downloadQueue.filter((job) => {
+			if (job.isBatch) {
+				$(job.queueId)?.remove();
+				return false;
+			}
+			return true;
+		});
+
+		const startBtn = document.getElementById("startBatchBtn");
+		const stopBtn = document.getElementById("stopBatchBtn");
+		const textarea = document.getElementById("batchUrlsInput");
+
+		if (startBtn) startBtn.style.display = "inline-flex";
+		if (stopBtn) stopBtn.style.display = "none";
+		if (textarea) textarea.disabled = false;
+
+		this._updateEmptyStateUI();
+		this._showPopup(i18n.__("stop") || "Batch download stopped", false);
+	}
+
 	validateUrl(rawUrl) {
 		const input = String(rawUrl ?? "").trim();
 
@@ -2522,7 +4495,14 @@ class YtDownloaderApp {
 }
 
 // --- Application Entry Point ---
-document.addEventListener("DOMContentLoaded", () => {
+function initApp() {
 	const app = new YtDownloaderApp();
+	window.app = app;
 	app.initialize();
-});
+}
+
+if (document.readyState === "loading") {
+	document.addEventListener("DOMContentLoaded", initApp);
+} else {
+	initApp();
+}

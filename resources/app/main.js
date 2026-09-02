@@ -8,15 +8,19 @@ const {
 	Menu,
 	clipboard,
 	session,
+	globalShortcut,
 } = require("electron");
-const {autoUpdater} = require("electron-updater");
+const { autoUpdater } = require("electron-updater");
 const fs = require("fs").promises;
-const {existsSync, readFileSync} = require("fs");
+const { existsSync, readFileSync, writeFileSync } = require("fs");
 const path = require("path");
 const DownloadHistory = require("./src/history");
+const { platform } = require("os");
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
 autoUpdater.autoDownload = false;
+autoUpdater.allowDowngrade = true;
+autoUpdater.autoInstallOnAppQuit = true;
 
 const USER_DATA_PATH = app.getPath("userData");
 const CONFIG_FILE_PATH = path.join(USER_DATA_PATH, "ytdownloader.json");
@@ -26,10 +30,6 @@ const appState = {
 	mainWindow: null,
 	/** @type {BrowserWindow | null} */
 	secondaryWindow: null,
-	/** @type {BrowserWindow | null} */
-	loginWindow: null,
-	/** @type {Array<Function>} */
-	loginWaiters: [],
 	/** @type {Tray | null} */
 	tray: null,
 	isQuitting: false,
@@ -39,19 +39,25 @@ const appState = {
 	config: {},
 	downloadHistory: new DownloadHistory(),
 	autoUpdateEnabled: false,
+	isManualUpdateCheck: false,
+	updateChannel: "stable",
+	/** @type {string | null} Currently registered global hotkey accelerator */
+	registeredHotkeyAccelerator: null,
 };
 
-const gotTheLock = app.requestSingleInstanceLock();
+const isTestEnv = process.env.NODE_ENV === "test" || process.argv.includes("--is-test") || process.env.YTDOWNLOADER_TEST === "true";
+const gotTheLock = isTestEnv ? true : app.requestSingleInstanceLock();
 
 if (!gotTheLock) {
 	app.quit();
 } else {
 	app.on("second-instance", () => {
-		if (appState.mainWindow) {
+		if (appState.mainWindow && !isTestEnv) {
 			if (appState.mainWindow.isMinimized())
 				appState.mainWindow.restore();
 			appState.mainWindow.show();
 			appState.mainWindow.focus();
+			if (app.dock) app.dock.show();
 		}
 	});
 }
@@ -66,14 +72,10 @@ app.whenReady().then(async () => {
 	});
 });
 
-app.on("before-quit", async () => {
+app.on("before-quit", () => {
 	appState.isQuitting = true;
-	try {
-		// Save the final config state before exiting.
-		await saveConfiguration();
-	} catch (error) {
-		console.error("Failed to save configuration during quit:", error);
-	}
+	globalShortcut.unregisterAll();
+	saveConfiguration();
 });
 
 app.on("window-all-closed", () => {
@@ -87,12 +89,10 @@ app.on("window-all-closed", () => {
  * and setting up handlers.
  */
 async function initialize() {
-	await loadConfiguration();
-	await loadTranslations();
+	await Promise.all([loadConfiguration(), loadTranslations()]);
 
 	registerIpcHandlers();
-	// 自动更新已在本魔改版中关闭
-	// registerAutoUpdaterEvents();
+	registerAutoUpdaterEvents();
 
 	createWindow();
 
@@ -106,31 +106,30 @@ function createWindow() {
 
 	appState.mainWindow = new BrowserWindow({
 		...bounds,
-		minWidth: 800,
-		minHeight: 600,
+		minWidth: 680,
+		minHeight: 500,
 		autoHideMenuBar: true,
 		show: false,
 		icon: path.join(__dirname, "/assets/images/icon.png"),
 		webPreferences: {
-			nodeIntegration: true,
-			contextIsolation: false,
+			nodeIntegration: false,
+			contextIsolation: true,
+			sandbox: false,
+			preload: path.join(__dirname, "preload.js"),
 			spellcheck: false,
 		},
-	});
-
-	appState.mainWindow.setTitle("YTDownloader魔改by简单");
-	appState.mainWindow.on("page-title-updated", (event) => {
-		event.preventDefault();
-		appState.mainWindow.setTitle("YTDownloader魔改by简单");
 	});
 
 	appState.mainWindow.loadFile("html/index.html");
 
 	appState.mainWindow.once("ready-to-show", () => {
+		if (!isTestEnv) {
+			appState.mainWindow.show();
+		}
+
 		if (appState.config.isMaximized) {
 			appState.mainWindow.maximize();
 		}
-		appState.mainWindow.show();
 	});
 
 	const saveBounds = () => {
@@ -173,19 +172,18 @@ function createSecondaryWindow(file) {
 		modal: true,
 		show: false,
 		webPreferences: {
-			nodeIntegration: true,
-			contextIsolation: false,
+			nodeIntegration: false,
+			contextIsolation: true,
+			sandbox: false,
+			preload: path.join(__dirname, "preload.js"),
 		},
-		width: 1000,
-		height: 800,
+		width: 900,
+		height: 640,
+		minWidth: 680,
+		minHeight: 500,
 	});
 
 	// appState.secondaryWindow.webContents.openDevTools();
-	appState.secondaryWindow.setTitle("YTDownloader魔改by简单");
-	appState.secondaryWindow.on("page-title-updated", (event) => {
-		event.preventDefault();
-		appState.secondaryWindow.setTitle("YTDownloader魔改by简单");
-	});
 	appState.secondaryWindow.loadFile(file);
 	appState.secondaryWindow.setMenu(null);
 	appState.secondaryWindow.once("ready-to-show", () => {
@@ -235,11 +233,13 @@ function createTray() {
 				if (!appState.indexPageIsOpen) {
 					wc.once("did-finish-load", () => {
 						appState.indexPageIsOpen = true;
+						wc.send("navigate-view", "view-home");
 						wc.send("link", text);
 					});
 
 					await appState.mainWindow.loadFile("html/index.html");
 				} else {
+					wc.send("navigate-view", "view-home");
 					wc.send("link", text);
 				}
 			},
@@ -247,9 +247,10 @@ function createTray() {
 		{
 			label: i18n("downloadPlaylistButton"),
 			click: () => {
-				appState.indexPageIsOpen = false;
-				appState.mainWindow?.loadFile("html/playlist.html");
-				appState.mainWindow?.show();
+				if (appState.mainWindow) {
+					appState.mainWindow.show();
+					appState.mainWindow.webContents.send("navigate-view", "view-playlist");
+				}
 				if (app.dock) app.dock.show();
 			},
 		},
@@ -264,19 +265,75 @@ function createTray() {
 	appState.tray.setToolTip("ytDownloader");
 	appState.tray.setContextMenu(contextMenu);
 	appState.tray.on("click", () => {
-		appState.mainWindow?.show();
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			if (appState.mainWindow.isMinimized()) appState.mainWindow.restore();
+			appState.mainWindow.show();
+			appState.mainWindow.focus();
+		}
 
 		if (app.dock) app.dock.show();
 	});
 }
 
+function configureAutoUpdaterChannel(channel = "stable") {
+	appState.updateChannel = channel;
+	if (channel === "beta") {
+		autoUpdater.allowPrerelease = true;
+		autoUpdater.channel = "beta";
+	} else {
+		autoUpdater.allowPrerelease = false;
+		autoUpdater.channel = "latest";
+	}
+}
+
 function registerIpcHandlers() {
 	ipcMain.on("autoUpdate", (_event, status) => {
 		appState.autoUpdateEnabled = status;
-		// 自动更新已在本魔改版中关闭
-		// if (status) {
-		// 	autoUpdater.checkForUpdates();
-		// }
+
+		if (status) {
+			triggerUpdateCheck(false);
+		}
+	});
+
+	ipcMain.on("set-update-channel", (_event, channel) => {
+		configureAutoUpdaterChannel(channel);
+	});
+
+	ipcMain.on("check-for-updates", async (_event, opts = {}) => {
+		if (opts.channel) {
+			configureAutoUpdaterChannel(opts.channel);
+		}
+		triggerUpdateCheck(Boolean(opts.isManual));
+	});
+
+	ipcMain.on("download-update", async () => {
+		if (!app.isPackaged) {
+			if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+				appState.mainWindow.webContents.send("update-error", {
+					message: "In-app downloading is only supported in packaged installations (NSIS/AppImage).",
+					isManual: true,
+				});
+			}
+			return;
+		}
+
+		try {
+			await autoUpdater.downloadUpdate();
+		} catch (err) {
+			console.error("Download update failed:", err);
+			if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+				appState.mainWindow.webContents.send("update-error", {
+					message: err?.message || "Failed to download update",
+					isManual: true,
+				});
+			}
+		}
+	});
+
+	ipcMain.on("install-update", (_event, opts = {}) => {
+		const isSilent = opts.isSilent !== undefined ? opts.isSilent : true;
+		const isForceRunAfter = opts.isForceRunAfter !== undefined ? opts.isForceRunAfter : true;
+		autoUpdater.quitAndInstall(isSilent, isForceRunAfter);
 	});
 
 	ipcMain.on("reload", () => {
@@ -292,7 +349,7 @@ function registerIpcHandlers() {
 		try {
 			await fs.stat(fullPath);
 			shell.showItemInFolder(fullPath);
-		} catch (error) {}
+		} catch (error) { }
 	});
 
 	ipcMain.handle("show-file", async (_event, fullPath) => {
@@ -300,9 +357,9 @@ function registerIpcHandlers() {
 			await fs.stat(fullPath);
 			shell.showItemInFolder(fullPath);
 
-			return {success: true};
+			return { success: true };
 		} catch (error) {
-			return {success: false, error: error.message};
+			return { success: false, error: error.message };
 		}
 	});
 
@@ -311,22 +368,40 @@ function registerIpcHandlers() {
 			await fs.stat(folderPath);
 			const result = await shell.openPath(folderPath);
 			if (result) {
-				return {success: false, error: result};
+				return { success: false, error: result };
 			} else {
-				return {success: true};
+				return { success: true };
 			}
 		} catch (error) {
-			return {success: false, error: error.message};
+			return { success: false, error: error.message };
 		}
 	});
 
+	function resolveHtmlPath(file) {
+		if (existsSync(file)) {
+			return file;
+		}
+		const basename = path.basename(file);
+		const htmlPath = path.join(__dirname, "html", basename);
+		if (existsSync(htmlPath)) {
+			return htmlPath;
+		}
+		const rootPath = path.join(__dirname, file);
+		if (existsSync(rootPath)) {
+			return rootPath;
+		}
+		return file;
+	}
+
 	ipcMain.on("load-win", (_event, file) => {
 		appState.indexPageIsOpen = file.includes("index.html");
-		appState.mainWindow?.loadFile(file);
+		const targetPath = resolveHtmlPath(file);
+		appState.mainWindow?.loadFile(targetPath);
 	});
 
 	ipcMain.on("load-page", (_event, file) => {
-		createSecondaryWindow(file);
+		const targetPath = resolveHtmlPath(file);
+		createSecondaryWindow(targetPath);
 	});
 
 	ipcMain.on("close-secondary", () => {
@@ -339,23 +414,24 @@ function registerIpcHandlers() {
 
 	ipcMain.on("select-location-main", async () => {
 		if (!appState.mainWindow) return;
-		const {canceled, filePaths} = await dialog.showOpenDialog(
+		const { canceled, filePaths } = await dialog.showOpenDialog(
 			appState.mainWindow,
-			{properties: ["openDirectory"]},
+			{ properties: ["openDirectory"] },
 		);
 		if (!canceled && filePaths.length > 0) {
 			appState.mainWindow.webContents.send("downloadPath", filePaths);
 		}
 	});
 
-	ipcMain.on("select-location-secondary", async () => {
-		if (!appState.secondaryWindow) return;
-		const {canceled, filePaths} = await dialog.showOpenDialog(
-			appState.secondaryWindow,
-			{properties: ["openDirectory"]},
+	ipcMain.on("select-location-secondary", async (event) => {
+		const targetWindow = appState.secondaryWindow || appState.mainWindow || (event && event.sender && BrowserWindow.fromWebContents(event.sender));
+		if (!targetWindow || targetWindow.isDestroyed()) return;
+		const { canceled, filePaths } = await dialog.showOpenDialog(
+			targetWindow,
+			{ properties: ["openDirectory"] },
 		);
-		if (!canceled && filePaths.length > 0) {
-			appState.secondaryWindow.webContents.send(
+		if (!canceled && filePaths.length > 0 && !targetWindow.isDestroyed()) {
+			targetWindow.webContents.send(
 				"downloadPath",
 				filePaths,
 			);
@@ -364,24 +440,39 @@ function registerIpcHandlers() {
 
 	ipcMain.on("get-directory", async () => {
 		if (!appState.mainWindow) return;
-		const {canceled, filePaths} = await dialog.showOpenDialog(
+		const { canceled, filePaths } = await dialog.showOpenDialog(
 			appState.mainWindow,
-			{properties: ["openDirectory"]},
+			{ properties: ["openDirectory"] },
 		);
 		if (!canceled && filePaths.length > 0) {
 			appState.mainWindow.webContents.send("directory-path", filePaths);
 		}
 	});
 
-	ipcMain.on("select-config", async () => {
-		if (!appState.secondaryWindow) return;
-		const {canceled, filePaths} = await dialog.showOpenDialog(
-			appState.secondaryWindow,
-			{properties: ["openFile"]},
+	ipcMain.handle("select-ytdlp-file", async () => {
+		if (!appState.mainWindow) return null;
+		const isWin = process.platform === "win32";
+		const { canceled, filePaths } = await dialog.showOpenDialog(
+			appState.mainWindow,
+			{
+				properties: ["openFile"],
+				filters: [
+					{
+						name: isWin ? "Executable (yt-dlp.exe)" : "Executable (yt-dlp)",
+						extensions: isWin ? ["exe", "*"] : ["*"],
+					},
+					{ name: "All Files", extensions: ["*"] },
+				],
+			},
 		);
 		if (!canceled && filePaths.length > 0) {
-			appState.secondaryWindow.webContents.send("configPath", filePaths);
+			return filePaths[0];
 		}
+		return null;
+	});
+
+	ipcMain.handle("get-cookies-path", () => {
+		return path.join(USER_DATA_PATH, "cookies.txt");
 	});
 
 	ipcMain.on("useTray", (_event, enabled) => {
@@ -393,18 +484,83 @@ function registerIpcHandlers() {
 		}
 	});
 
+	ipcMain.on("useGlobalHotkey", (_event, config) => {
+		// Unregister whatever was previously registered
+		if (appState.registeredHotkeyAccelerator) {
+			globalShortcut.unregister(appState.registeredHotkeyAccelerator);
+			appState.registeredHotkeyAccelerator = null;
+		}
+		if (!config || !config.enabled) return;
+
+		const defaultAccel = process.platform === "darwin" ? "Cmd+Shift+D" : "Ctrl+Shift+D";
+		const accelerator = config.accelerator || defaultAccel;
+
+		try {
+			globalShortcut.register(accelerator, async () => {
+				const text = clipboard.readText().trim();
+				if (!appState.mainWindow || appState.mainWindow.isDestroyed()) return;
+
+				if (appState.mainWindow.isMinimized()) appState.mainWindow.restore();
+				appState.mainWindow.show();
+				appState.mainWindow.focus();
+				if (app.dock) app.dock.show();
+
+				const wc = appState.mainWindow.webContents;
+				if (!appState.indexPageIsOpen) {
+					wc.once("did-finish-load", () => {
+						appState.indexPageIsOpen = true;
+						wc.send("navigate-view", "view-home");
+						if (text) wc.send("link", text);
+					});
+					await appState.mainWindow.loadFile("html/index.html");
+				} else {
+					wc.send("navigate-view", "view-home");
+					if (text) wc.send("link", text);
+				}
+			});
+			appState.registeredHotkeyAccelerator = accelerator;
+		} catch (error) {
+			console.error("Failed to register global hotkey:", error);
+		}
+	});
+
+	ipcMain.handle("get-registered-hotkey", () => {
+		return appState.registeredHotkeyAccelerator;
+	});
+
 	ipcMain.on("progress", (_event, percentage) => {
 		if (appState.mainWindow) appState.mainWindow.setProgressBar(percentage);
 	});
 
 	ipcMain.on("error_dialog", async (_event, message) => {
-		const {response} = await dialog.showMessageBox(appState.mainWindow, {
+		const win = appState.mainWindow && !appState.mainWindow.isDestroyed() ? appState.mainWindow : null;
+		const { response } = await dialog.showMessageBox(win, {
 			type: "error",
 			title: "Error",
 			message: message,
 			buttons: ["Ok", i18n("clickToCopy")],
 		});
 		if (response === 1) clipboard.writeText(message);
+	});
+
+	ipcMain.handle("show-confirm-dialog", async (event, options = {}) => {
+		const win =
+			(event && event.sender && BrowserWindow.fromWebContents(event.sender)) ||
+			(appState.mainWindow && !appState.mainWindow.isDestroyed()
+				? appState.mainWindow
+				: null);
+		const { response } = await dialog.showMessageBox(win, {
+			type: options.type || "question",
+			message: options.message || "",
+			buttons: options.buttons || [
+				options.confirmLabel || "OK",
+				options.cancelLabel || "Cancel",
+			],
+			defaultId: options.defaultId ?? 0,
+			cancelId: options.cancelId ?? 1,
+			title: options.title || "",
+		});
+		return response === (options.confirmIndex ?? 0);
 	});
 
 	ipcMain.handle("get-system-locale", async (_event) => {
@@ -419,18 +575,31 @@ function registerIpcHandlers() {
 			`${locale}.json`,
 		);
 
-		const fallbackData = JSON.parse(readFileSync(fallbackFile, "utf8"));
+		let fallbackData = {};
+		try {
+			fallbackData = JSON.parse(readFileSync(fallbackFile, "utf8"));
+		} catch (error) {
+			console.error("Could not parse default language file", error);
+		}
 
 		let localeData = {};
-		if (locale !== "en" && existsSync(localeFile)) {
+		if (locale && locale !== "en" && existsSync(localeFile)) {
 			try {
 				localeData = JSON.parse(readFileSync(localeFile, "utf8"));
-			} catch (e) {
-				console.error(`Could not parse ${localeFile}`, e);
+			} catch (error) {
+				console.error(`Could not parse ${localeFile}`, error);
 			}
 		}
 
-		const mergedTranslations = {...fallbackData, ...localeData};
+		const mergedTranslations = { ...fallbackData, ...localeData };
+		appState.loadedLanguage = mergedTranslations;
+		if (appState.trayEnabled) {
+			if (appState.tray) {
+				appState.tray.destroy();
+				appState.tray = null;
+			}
+			createTray();
+		}
 
 		return mergedTranslations;
 	});
@@ -496,193 +665,123 @@ function registerIpcHandlers() {
 			}
 		},
 	);
-
-	ipcMain.handle("open-youtube-login", () => openLoginWindowAndWait());
 }
 
-const YTDLP_COOKIES_PATH = "C:\\Users\\Administrator\\.ytDownloader\\cookies.txt";
-const LOGIN_PARTITION = "persist:ytdlp-login";
+function isZipBuild() {
+	if (!app.isPackaged || platform() !== "win32") return false;
 
-function openLoginWindowAndWait() {
-	return new Promise((resolve) => {
-		appState.loginWaiters.push(resolve);
+	const exeDir = path.dirname(app.getPath("exe"));
 
-		if (appState.loginWindow) {
-			appState.loginWindow.focus();
-			return;
-		}
+	const uninstallerPath = path.join(exeDir, "Uninstall YTDownloader.exe");
 
-		const win = new BrowserWindow({
-			width: 1100,
-			height: 800,
-			parent: appState.mainWindow,
-			modal: true,
-			show: false,
-			autoHideMenuBar: true,
-			title: "YouTube Login - close this window after signing in",
-			webPreferences: {
-				nodeIntegration: false,
-				contextIsolation: true,
-				partition: LOGIN_PARTITION,
-			},
-		});
+	return !existsSync(uninstallerPath);
+}
 
-		appState.loginWindow = win;
+function hasAppUpdateConfig() {
+	if (!app.isPackaged) return false;
+	const updateYmlPath = path.join(process.resourcesPath, "app-update.yml");
+	return existsSync(updateYmlPath);
+}
 
-		const loginUrl =
-			"https://accounts.google.com/ServiceLogin?continue=" +
-			encodeURIComponent("https://www.youtube.com");
-		win.loadURL(loginUrl);
-
-		win.webContents.on("did-navigate", async (_event, url) => {
-			try {
-				const hostname = new URL(url).hostname;
-				if (
-					hostname !== "www.youtube.com" &&
-					hostname !== "youtube.com"
-				) {
-					return;
-				}
-
-				// 等 cookies 写入完成
-				await new Promise((resolve) => setTimeout(resolve, 1500));
-
-				if (win.isDestroyed()) return;
-
-				const ses = session.fromPartition(LOGIN_PARTITION);
-				const cookies = await ses.cookies.get({
-					url: "https://www.youtube.com",
+function triggerUpdateCheck(isManual = false) {
+	appState.isManualUpdateCheck = isManual;
+	if (hasAppUpdateConfig()) {
+		autoUpdater.checkForUpdates().catch((err) => {
+			console.error("Auto-updater check failed:", err);
+			if (isManual && appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+				appState.mainWindow.webContents.send("update-error", {
+					message: err?.message || "Failed to check for updates",
+					isManual: true,
 				});
-				const hasLogin = cookies.some((c) =>
-					/^(SID|__Secure-3PSID|__Secure-3PAPISID|SAPISID|LOGIN_INFO)$/i.test(
-						c.name || "",
-					),
-				);
-
-				if (hasLogin && !win.isDestroyed()) {
-					win.close();
-				}
-			} catch (error) {
-				console.error("Auto close login window failed:", error);
 			}
 		});
-
-		win.once("ready-to-show", () => win.show());
-
-		win.on("closed", async () => {
-			appState.loginWindow = null;
-
-			let result;
-			try {
-				result = await exportLoginCookies();
-			} catch (error) {
-				result = {success: false, error: error.message};
-			}
-
-			const waiters = appState.loginWaiters.splice(0);
-			for (const resolveWaiter of waiters) resolveWaiter(result);
-		});
-	});
-}
-
-async function exportLoginCookies() {
-	const ses = session.fromPartition(LOGIN_PARTITION);
-	const cookies = await ses.cookies.get({});
-
-	const relevant =
-		/(^|\.)(youtube\.com|youtube-nocookie\.com|ytimg\.com|googlevideo\.com|ggpht\.com|googleusercontent\.com|google\.com)$/i;
-	const selected = cookies.filter((c) =>
-		relevant.test((c.domain || "").replace(/^\./, "")),
-	);
-
-	const hasLoginCookie = selected.some((c) =>
-		/^(SID|__Secure-3PSID|__Secure-3PAPISID|SAPISID|LOGIN_INFO)$/i.test(
-			c.name || "",
-		),
-	);
-
-	if (!hasLoginCookie) {
-		return {
-			success: false,
-			error: "未检测到 YouTube 登录 cookies，请确认已在窗口中登录后再关闭窗口",
-		};
+	} else if (isManual) {
+		// For builds that don't support auto update check (ZIP/portable/dev), open the latest release link directly
+		const releaseUrl =
+			appState.updateChannel === "beta"
+				? "https://github.com/aandrew-me/ytDownloader/releases"
+				: "https://github.com/aandrew-me/ytDownloader/releases/latest";
+		shell.openExternal(releaseUrl);
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			appState.mainWindow.webContents.send("update-not-available", {
+				version: app.getVersion(),
+				isManual: true,
+			});
+		}
 	}
-
-	const lines = [
-		"# Netscape HTTP Cookie File",
-		"# Generated by YTDownloader YouTube Login",
-	];
-
-	for (const c of selected) {
-		const domain = c.domain || "";
-		const includeSubdomains = domain.startsWith(".") ? "TRUE" : "FALSE";
-		const path = c.path || "/";
-		const secure = c.secure ? "TRUE" : "FALSE";
-		const expires = c.expirationDate ? Math.floor(c.expirationDate) : 0;
-		const name = c.name || "";
-		const value = c.value || "";
-		lines.push(
-			[domain, includeSubdomains, path, secure, expires, name, value].join(
-				"\t",
-			),
-		);
-	}
-
-	await fs.writeFile(YTDLP_COOKIES_PATH, lines.join("\n") + "\n", "utf8");
-	return {
-		success: true,
-		count: selected.length,
-		path: YTDLP_COOKIES_PATH,
-	};
 }
 
 function registerAutoUpdaterEvents() {
-	autoUpdater.on("update-available", async (info) => {
-		const dialogOpts = {
-			type: "info",
-			buttons: [i18n("update"), i18n("no")],
-			title: "Update Available",
-			message: i18n("updateAvailablePrompt"),
-			detail:
-				info.releaseNotes?.toString().replace(/<[^>]*>?/gm, "") ||
-				"No details available.",
-		};
-		const {response} = await dialog.showMessageBox(
-			appState.mainWindow,
-			dialogOpts,
-		);
-		if (response === 0) {
-			autoUpdater.downloadUpdate();
+	autoUpdater.on("checking-for-update", () => {
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			appState.mainWindow.webContents.send("checking-for-update", {
+				isManual: appState.isManualUpdateCheck,
+			});
 		}
 	});
 
-	autoUpdater.on("update-downloaded", async () => {
-		appState.mainWindow.webContents.send("update-downloaded", "");
-		const dialogOpts = {
-			type: "info",
-			buttons: [i18n("restart"), i18n("later")],
-			title: "Update Ready",
-			message: i18n("installAndRestartPrompt"),
+	autoUpdater.on("update-available", (info) => {
+		const isManual = appState.isManualUpdateCheck;
+		appState.isManualUpdateCheck = false;
+		const payload = {
+			version: info.version,
+			releaseDate: info.releaseDate,
+			releaseNotes: info.releaseNotes || "",
+			isPrerelease: Boolean(
+				info.prerelease ||
+				(info.version && (info.version.includes("-beta") || info.version.includes("-alpha") || info.version.includes("-rc")))
+			),
+			isZipBuild: isZipBuild(),
+			isAppImage: Boolean(process.env.APPIMAGE),
+			platform: platform(),
+			arch: process.arch,
+			isManual: isManual,
 		};
-		const {response} = await dialog.showMessageBox(
-			appState.mainWindow,
-			dialogOpts,
-		);
-		if (response === 0) {
-			autoUpdater.quitAndInstall(true, true);
-		} else {
-			// TODO: Consider if its worth enabling
-			// autoUpdater.autoInstallOnAppQuit = true;
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			appState.mainWindow.webContents.send("update-available", payload);
 		}
 	});
 
-	autoUpdater.on("download-progress", async (info) => {
-		appState.mainWindow.webContents.send("download-progress", info.percent);
+	autoUpdater.on("update-not-available", (info) => {
+		const isManual = appState.isManualUpdateCheck;
+		appState.isManualUpdateCheck = false;
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			appState.mainWindow.webContents.send("update-not-available", {
+				version: app.getVersion(),
+				isManual: isManual,
+			});
+		}
+	});
+
+	autoUpdater.on("download-progress", (info) => {
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			appState.mainWindow.webContents.send("download-progress", {
+				percent: info.percent || 0,
+				bytesPerSecond: info.bytesPerSecond || 0,
+				transferred: info.transferred || 0,
+				total: info.total || 0,
+			});
+		}
+	});
+
+	autoUpdater.on("update-downloaded", (info) => {
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			appState.mainWindow.webContents.send("update-downloaded", {
+				version: info?.version || "",
+			});
+		}
 	});
 
 	autoUpdater.on("error", (error) => {
+		const isManual = appState.isManualUpdateCheck;
+		appState.isManualUpdateCheck = false;
 		console.error("Auto-update error:", error);
-		// dialog.showErrorBox("Update Error", i18n("updateError"));
+		if (appState.mainWindow && !appState.mainWindow.isDestroyed()) {
+			appState.mainWindow.webContents.send("update-error", {
+				message: error?.message || "Auto-update error",
+				isManual: isManual,
+			});
+		}
 	});
 }
 
@@ -707,15 +806,15 @@ async function loadConfiguration() {
 			error.message,
 		);
 		appState.config = {
-			bounds: {width: 1024, height: 768},
+			bounds: { width: 900, height: 640 },
 			isMaximized: false,
 		};
 	}
 }
 
-async function saveConfiguration() {
+function saveConfiguration() {
 	try {
-		await fs.writeFile(CONFIG_FILE_PATH, JSON.stringify(appState.config));
+		writeFileSync(CONFIG_FILE_PATH, JSON.stringify(appState.config, null, 2));
 	} catch (error) {
 		console.error("Failed to save configuration:", error);
 	}
@@ -723,21 +822,31 @@ async function saveConfiguration() {
 
 async function loadTranslations() {
 	const locale = app.getSystemLocale();
-	console.log({locale});
 	const defaultLangPath = path.join(__dirname, "translations", "en.json");
+	let fallbackData = {};
+	try {
+		const defaultContent = await fs.readFile(defaultLangPath, "utf8");
+		fallbackData = JSON.parse(defaultContent);
+	} catch (e) {
+		console.error("Failed to load default translations:", e);
+	}
+
 	let langPath = path.join(__dirname, "translations", `${locale}.json`);
-
-	try {
-		await fs.access(langPath);
-	} catch {
-		langPath = defaultLangPath;
+	let localeData = {};
+	if (locale !== "en") {
+		try {
+			await fs.access(langPath);
+			const fileContent = await fs.readFile(langPath, "utf8");
+			localeData = JSON.parse(fileContent);
+		} catch {
+			const baseCode = locale.split("-")[0];
+			const altPath = path.join(__dirname, "translations", `${baseCode}.json`);
+			try {
+				const altContent = await fs.readFile(altPath, "utf8");
+				localeData = JSON.parse(altContent);
+			} catch (_) { }
+		}
 	}
 
-	try {
-		const fileContent = await fs.readFile(langPath, "utf8");
-		appState.loadedLanguage = JSON.parse(fileContent);
-	} catch (error) {
-		console.error("Failed to load translation file:", error);
-		appState.loadedLanguage = {};
-	}
+	appState.loadedLanguage = { ...fallbackData, ...localeData };
 }
