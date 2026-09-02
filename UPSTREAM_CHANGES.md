@@ -1,5 +1,7 @@
 # 相对上游的改动清单（UPSTREAM_CHANGES）
 
+[English](./UPSTREAM_CHANGES.en-US.md) | 中文
+
 - **基线**：[aandrew-me/ytDownloader](https://github.com/aandrew-me/ytDownloader) **v3.22.0**（tag 判定：本地 `package.json` version=3.22.0；且全部会话编辑可按原序干净回放到上游源码内容，回放结果与磁盘逐字节一致）。
 - **改动时间**：2026-08-19（DSH 会话记录；Claude 会话 3a604718 仅做过目录勘察，无编辑事件）。
 - **改动范围**：仅 `resources/app/` 下源码；Electron 运行时与 `node_modules/` 无改动。

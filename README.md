@@ -1,5 +1,7 @@
 # YTDownloader 魔改版（by 简单）
 
+[English](./README.en-US.md) | 中文
+
 基于 [aandrew-me/ytDownloader](https://github.com/aandrew-me/ytDownloader)（上游版本 **v3.22.0**）的 Windows 本地魔改版。本仓库收录 `resources/app/` 下的应用源码与魔改内容，相对上游的全部改动见 [UPSTREAM_CHANGES.md](UPSTREAM_CHANGES.md)。
 
 ## 魔改内容一览

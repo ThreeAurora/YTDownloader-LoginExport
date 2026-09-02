@@ -3,6 +3,8 @@
 
 /*
 !/resources
+!/README.en-US.md
+!/UPSTREAM_CHANGES.en-US.md
 
 /resources/*
 !/resources/app
