@@ -1,0 +1,17 @@
+# ===== YTDownloader 魔改版 .gitignore =====
+# 仓库只收 resources/app 下的应用源码；Electron 运行时、二进制与依赖一律排除
+
+/*
+!/resources
+
+/resources/*
+!/resources/app
+
+# 运行时依赖与二进制（约 170MB+，392MB 安装目录的主体）
+/resources/app/node_modules/
+/resources/app/ffmpeg/
+/resources/app/node.exe
+
+# 系统文件
+Thumbs.db
+Desktop.ini
