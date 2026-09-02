@@ -1,5 +1,6 @@
 # ===== YTDownloader 魔改版 .gitignore =====
-# 仓库只收 resources/app 下的应用源码；Electron 运行时、二进制与依赖一律排除
+# 防丢模式 2026-09-02: resources/app 全量入库（含 node_modules / node.exe / ffmpeg，可运行体不拆）
+# 仓库另收根级 README.en-US.md 与 UPSTREAM_CHANGES.en-US.md
 
 /*
 !/resources
@@ -8,11 +9,6 @@
 
 /resources/*
 !/resources/app
-
-# 运行时依赖与二进制（约 170MB+，392MB 安装目录的主体）
-/resources/app/node_modules/
-/resources/app/ffmpeg/
-/resources/app/node.exe
 
 # 系统文件
 Thumbs.db
